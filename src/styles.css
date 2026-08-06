@@ -46,6 +46,13 @@
   box-sizing: border-box;
 }
 
+/* Any author `display` rule outranks the user-agent's `[hidden]` rule, which
+   would otherwise leave elements like the modal and the card spinners visible
+   despite their hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
