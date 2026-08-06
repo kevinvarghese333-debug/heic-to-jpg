@@ -79,17 +79,23 @@ async function pump(
 }
 
 /**
- * Writes the archive straight to a file the user picks, so a multi-gigabyte
- * batch never has to fit in memory. Returns false when the browser lacks the
- * File System Access API or the user cancels the picker.
+ * Outcome of a streamed save. `cancelled` and `unsupported` are deliberately
+ * distinct: dismissing the save dialog means the user does not want the file,
+ * so falling back to a normal download would be the wrong thing to do.
+ */
+export type StreamOutcome = 'saved' | 'cancelled' | 'unsupported';
+
+/**
+ * Writes the archive straight to a file the user picks, so a very large batch
+ * never has to fit in memory.
  */
 export async function streamZipToDisk(
   entries: ZipEntry[],
   suggestedName: string,
   onProgress?: ZipProgress,
-): Promise<boolean> {
+): Promise<StreamOutcome> {
   const picker = (window as SaveFilePickerWindow).showSaveFilePicker;
-  if (!picker) return false;
+  if (!picker) return 'unsupported';
 
   let handle: FileSystemFileHandle;
   try {
@@ -97,15 +103,18 @@ export async function streamZipToDisk(
       suggestedName,
       types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
     });
-  } catch {
-    return false; // the user dismissed the dialog
+  } catch (error) {
+    // AbortError means the user dismissed the dialog. Anything else (a
+    // SecurityError inside an iframe, a missing user gesture) means the API is
+    // unusable here and the caller should fall back.
+    return (error as DOMException)?.name === 'AbortError' ? 'cancelled' : 'unsupported';
   }
 
   const writable = await handle.createWritable();
   try {
     await pump(entries, (chunk) => writable.write(chunk as unknown as FileSystemWriteChunkType), onProgress);
     await writable.close();
-    return true;
+    return 'saved';
   } catch (error) {
     await writable.abort().catch(() => undefined);
     throw error;

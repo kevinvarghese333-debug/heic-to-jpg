@@ -722,14 +722,23 @@ downloadZipButton.addEventListener('click', async () => {
   };
 
   try {
-    // Streaming straight to disk keeps a huge batch out of memory entirely.
-    if (canStreamToDisk()) {
-      const saved = await streamZipToDisk(entries, 'converted-photos.zip', onProgress);
-      if (saved) {
+    // A normal download is what people expect, so it is the default. The
+    // save-to-disk dialog is reserved for batches large enough that holding the
+    // whole archive in memory is a genuine risk.
+    const totalBytes = ready.reduce((sum, item) => sum + item.outSize, 0);
+    const HUGE_BATCH = 250 * 1024 * 1024;
+
+    if (totalBytes > HUGE_BATCH && canStreamToDisk()) {
+      const outcome = await streamZipToDisk(entries, 'converted-photos.zip', onProgress);
+      if (outcome === 'saved') {
         showToast(`${ready.length} files written to your chosen location`);
         return;
       }
+      // Dismissing the dialog means they don't want the file — don't then
+      // force a download on them.
+      if (outcome === 'cancelled') return;
     }
+
     const zipBlob = await buildZip(entries, onProgress);
     saveBlob(zipBlob, 'converted-photos.zip');
     showToast(`${ready.length} photos zipped · ${formatBytes(zipBlob.size)}`);
