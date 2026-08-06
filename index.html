@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HEIC to JPG — private, in-browser converter</title>
+    <meta
+      name="description"
+      content="Convert iPhone HEIC photos to JPG, PNG, WebP or PDF right in your browser. Batch conversion, target file size, colour-accurate output, full metadata control. Nothing is ever uploaded."
+    />
+    <meta name="theme-color" content="#faf8f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#15140f" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="HEIC to JPG — private, in-browser converter" />
+    <meta
+      property="og:description"
+      content="Convert iPhone HEIC photos without uploading them anywhere. Target file size, metadata control, PDF export."
+    />
+    <meta property="og:type" content="website" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <div class="wordmark">
+          <span class="wordmark__from">HEIC</span>
+          <svg class="wordmark__arrow" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 12h15m0 0l-5.5-5.5M19 12l-5.5 5.5" />
+          </svg>
+          <span class="wordmark__to">JPG</span>
+        </div>
+        <h1>Turn iPhone photos into JPGs<br />without uploading them anywhere.</h1>
+        <p class="lede">
+          Conversion runs entirely inside this tab using WebAssembly. Your photos never
+          touch a server — there isn't one.
+        </p>
+        <p class="proof">
+          <span class="proof__dot" aria-hidden="true"></span>
+          Uploaded this session: <strong id="net-counter">0 bytes</strong>
+          <button id="open-trust" class="linkbutton" type="button">Verify this yourself</button>
+        </p>
+      </header>
+
+      <div id="unsupported" class="notice notice--blocking" hidden>
+        <h2>This browser can't run the converter</h2>
+        <p id="unsupported-detail"></p>
+        <p>
+          It needs WebAssembly and Web Workers. Recent Chrome, Edge, Firefox or Safari
+          16.4+ will work, and nothing you do here is ever sent anywhere.
+        </p>
+      </div>
+
+      <main id="app-main">
+        <section
+          id="dropzone"
+          class="dropzone"
+          tabindex="0"
+          role="button"
+          aria-label="Choose HEIC files to convert"
+        >
+          <svg class="dropzone__icon" viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="6" y="10" width="36" height="28" rx="4" />
+            <path d="M6 31l9-9 7 7 6-6 10 10" />
+            <circle cx="17" cy="19" r="3" />
+          </svg>
+          <p class="dropzone__title">Drop HEIC photos here</p>
+          <p class="dropzone__hint">or <span class="link">browse your files</span> · batch is fine</p>
+          <input
+            id="file-input"
+            type="file"
+            accept=".heic,.heif,.hif,.avif,image/heic,image/heif,image/avif"
+            multiple
+            hidden
+          />
+        </section>
+
+        <section id="controls" class="controls" hidden>
+          <div class="controls__head">
+            <h2>Output settings</h2>
+            <p>Adjust freely — every file re-encodes instantly. Nothing is final until you download.</p>
+          </div>
+
+          <div class="controls__grid">
+            <div class="control">
+              <label for="format">Format</label>
+              <select id="format"></select>
+              <p class="control__hint" id="format-hint">JPG is the safe universal choice.</p>
+            </div>
+
+            <div class="control">
+              <label for="quality">
+                Quality
+                <output id="quality-value" for="quality">85</output>
+              </label>
+              <input id="quality" type="range" min="30" max="100" step="1" value="85" />
+              <p class="control__hint" id="quality-hint">Great for photos and web use.</p>
+            </div>
+
+            <div class="control">
+              <label for="max-dimension">Resize</label>
+              <select id="max-dimension">
+                <option value="0" selected>Keep original size</option>
+                <option value="4096">Longest edge 4096px</option>
+                <option value="2560">Longest edge 2560px</option>
+                <option value="1920">Longest edge 1920px</option>
+                <option value="1280">Longest edge 1280px</option>
+                <option value="800">Longest edge 800px</option>
+              </select>
+              <p class="control__hint">Only ever scales down, never up.</p>
+            </div>
+
+            <div class="control">
+              <label for="target-size">Target file size</label>
+              <div class="inputrow">
+                <input
+                  id="target-size"
+                  type="text"
+                  inputmode="decimal"
+                  placeholder="e.g. 500kb"
+                  autocomplete="off"
+                />
+                <button id="target-clear" class="btn btn--ghost btn--small" type="button">Off</button>
+              </div>
+              <p class="control__hint" id="target-hint">
+                Got an upload limit? Type the number and every file lands under it.
+              </p>
+            </div>
+
+            <div class="control">
+              <label for="name-pattern">Rename files</label>
+              <input id="name-pattern" type="text" placeholder="{name}" autocomplete="off" />
+              <p class="control__hint">
+                Tokens: <code>{name}</code> <code>{n}</code> <code>{n:3}</code>
+                <code>{date}</code> <code>{w}</code> <code>{h}</code>
+              </p>
+            </div>
+
+            <div class="control">
+              <label>Metadata</label>
+              <div class="switches">
+                <label class="switch" for="keep-exif">
+                  <input id="keep-exif" type="checkbox" checked />
+                  <span class="switch__track"><span class="switch__thumb"></span></span>
+                  <span class="switch__label">Camera info (EXIF)</span>
+                </label>
+                <label class="switch" for="keep-gps">
+                  <input id="keep-gps" type="checkbox" checked />
+                  <span class="switch__track"><span class="switch__thumb"></span></span>
+                  <span class="switch__label">Location (GPS)</span>
+                </label>
+                <label class="switch" for="keep-icc">
+                  <input id="keep-icc" type="checkbox" checked />
+                  <span class="switch__track"><span class="switch__thumb"></span></span>
+                  <span class="switch__label">Colour profile</span>
+                </label>
+                <label class="switch" for="keep-xmp">
+                  <input id="keep-xmp" type="checkbox" checked />
+                  <span class="switch__track"><span class="switch__thumb"></span></span>
+                  <span class="switch__label">XMP tags</span>
+                </label>
+              </div>
+              <p class="control__hint" id="metadata-hint">
+                Colour profile off means wide-gamut photos shift toward sRGB.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section id="results" class="results" hidden>
+          <div class="results__head">
+            <div>
+              <h2 id="results-title">Converted</h2>
+              <p class="results__progress" id="results-progress"></p>
+            </div>
+            <div class="results__actions">
+              <button id="cancel" class="btn btn--ghost" type="button" hidden>Cancel</button>
+              <button id="clear" class="btn btn--ghost" type="button">Clear all</button>
+            </div>
+          </div>
+          <ul id="grid" class="grid"></ul>
+        </section>
+      </main>
+
+      <footer class="colophon">
+        <p>
+          Runs offline once loaded · Open source ·
+          <button id="open-about" class="linkbutton" type="button">About &amp; licences</button>
+          ·
+          <button id="open-privacy" class="linkbutton" type="button">Privacy &amp; security</button>
+        </p>
+      </footer>
+    </div>
+
+    <div id="actionbar" class="actionbar" hidden>
+      <div class="actionbar__inner">
+        <p id="actionbar-summary" class="actionbar__summary"></p>
+        <div class="actionbar__buttons">
+          <button id="download-pdf" class="btn btn--ghost" type="button">Combine into PDF</button>
+          <button id="download-zip" class="btn btn--primary" type="button">Download all as ZIP</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal__backdrop" data-close></div>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <header class="modal__head">
+          <h2 id="modal-title"></h2>
+          <button id="modal-close" class="modal__close" type="button" aria-label="Close">×</button>
+        </header>
+        <div id="modal-body" class="modal__body"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="live-region" class="visually-hidden" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
