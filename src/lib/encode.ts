@@ -391,9 +391,25 @@ export async function encodeImage(bitmap: ImageBitmap, options: EncodeOptions): 
     }
 
     if (!fitted) {
+      // The proxy-guided attempts gave up. Fall back to shrinking from a real
+      // measurement, which converges quickly because output size tracks pixel
+      // count: each round divides the overshoot rather than guessing.
       quality = FLOOR_QUALITY;
-      blob = await toBlob(canvas, options.format, quality);
-      if (blob.size > budget) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        blob = await toBlob(canvas, options.format, quality);
+        if (blob.size <= budget) {
+          fitted = true;
+          break;
+        }
+        // 40px is the floor; below that the result is useless anyway.
+        if (Math.max(dims.width, dims.height) <= 40) break;
+
+        scale *= Math.max(0.3, Math.min(0.9, Math.sqrt(budget / blob.size) * 0.95));
+        dims = targetDimensions(bitmap, options, scale);
+        canvas = prepareCanvas(bitmap, options, dims.width, dims.height);
+      }
+
+      if (!fitted) {
         notes.push('Could not reach the target size — this is the smallest result');
       }
     }
