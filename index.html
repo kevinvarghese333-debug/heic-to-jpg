@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HEIC to JPG — private, in-browser converter</title>
+    <title>Compress, resize, crop and convert images — private, in-browser</title>
     <meta
       name="description"
-      content="Convert iPhone HEIC photos to JPG, PNG, WebP or PDF right in your browser. Batch conversion, target file size, colour-accurate output, full metadata control. Nothing is ever uploaded."
+      content="Compress JPG, resize, crop and convert HEIC, JPG, PNG and WebP right in your browser. Target file size, batch processing, full metadata control. Nothing is ever uploaded."
     />
     <meta name="theme-color" content="#faf8f5" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#15140f" media="(prefers-color-scheme: dark)" />
-    <meta property="og:title" content="HEIC to JPG — private, in-browser converter" />
+    <meta property="og:title" content="Compress, resize, crop and convert images — private, in-browser" />
     <meta
       property="og:description"
-      content="Convert iPhone HEIC photos without uploading them anywhere. Target file size, metadata control, PDF export."
+      content="Compress and convert photos without uploading them anywhere. Target file size, crop, resize, metadata control."
     />
     <meta property="og:type" content="website" />
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -24,16 +24,16 @@
     <div class="page">
       <header class="masthead">
         <div class="wordmark">
-          <span class="wordmark__from">HEIC</span>
+          <span class="wordmark__from">IMAGE</span>
           <svg class="wordmark__arrow" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 12h15m0 0l-5.5-5.5M19 12l-5.5 5.5" />
           </svg>
-          <span class="wordmark__to">JPG</span>
+          <span class="wordmark__to">TOOLKIT</span>
         </div>
-        <h1>Turn iPhone photos into JPGs<br />without uploading them anywhere.</h1>
+        <h1>Compress, resize, crop and convert<br />without uploading anything.</h1>
         <p class="lede">
-          Conversion runs entirely inside this tab using WebAssembly. Your photos never
-          touch a server — there isn't one.
+          HEIC, JPG, PNG and WebP in. Everything runs inside this tab using WebAssembly —
+          your photos never touch a server, because there isn't one.
         </p>
         <p class="proof">
           <span class="proof__dot" aria-hidden="true"></span>
@@ -57,112 +57,218 @@
           class="dropzone"
           tabindex="0"
           role="button"
-          aria-label="Choose HEIC files to convert"
+          aria-label="Choose images to process"
         >
           <svg class="dropzone__icon" viewBox="0 0 48 48" aria-hidden="true">
             <rect x="6" y="10" width="36" height="28" rx="4" />
             <path d="M6 31l9-9 7 7 6-6 10 10" />
             <circle cx="17" cy="19" r="3" />
           </svg>
-          <p class="dropzone__title">Drop HEIC photos here</p>
-          <p class="dropzone__hint">or <span class="link">browse your files</span> · batch is fine</p>
+          <p class="dropzone__title">Drop images here</p>
+          <p class="dropzone__hint">
+            or <span class="link">browse your files</span> · HEIC, JPG, PNG, WebP · batch is fine
+          </p>
           <input
             id="file-input"
             type="file"
-            accept=".heic,.heif,.hif,.avif,image/heic,image/heif,image/avif"
+            accept="image/*,.heic,.heif,.hif,.avif"
             multiple
             hidden
           />
         </section>
 
         <section id="controls" class="controls" hidden>
-          <div class="controls__head">
-            <h2>Output settings</h2>
-            <p>Adjust freely — every file re-encodes instantly. Nothing is final until you download.</p>
+          <div class="tabs" role="tablist" aria-label="Tools">
+            <button class="tab is-active" role="tab" type="button" data-tool="compress" aria-selected="true">
+              Compress
+            </button>
+            <button class="tab" role="tab" type="button" data-tool="resize" aria-selected="false">
+              Resize
+            </button>
+            <button class="tab" role="tab" type="button" data-tool="crop" aria-selected="false">
+              Crop &amp; rotate
+            </button>
+            <button class="tab" role="tab" type="button" data-tool="convert" aria-selected="false">
+              Convert
+            </button>
           </div>
 
-          <div class="controls__grid">
-            <div class="control">
-              <label for="format">Format</label>
-              <select id="format"></select>
-              <p class="control__hint" id="format-hint">JPG is the safe universal choice.</p>
-            </div>
+          <div class="panels">
+            <!-- COMPRESS -->
+            <div class="panel is-active" data-panel="compress" role="tabpanel">
+              <p class="panel__lede">
+                Shrink files without leaving your device. Change anything here and every
+                image re-encodes instantly — nothing is final until you download.
+              </p>
+              <div class="controls__grid">
+                <div class="control">
+                  <label for="quality">
+                    Quality
+                    <output id="quality-value" for="quality">85</output>
+                  </label>
+                  <input id="quality" type="range" min="30" max="100" step="1" value="85" />
+                  <p class="control__hint" id="quality-hint">Great for photos and web use.</p>
+                </div>
 
-            <div class="control">
-              <label for="quality">
-                Quality
-                <output id="quality-value" for="quality">85</output>
-              </label>
-              <input id="quality" type="range" min="30" max="100" step="1" value="85" />
-              <p class="control__hint" id="quality-hint">Great for photos and web use.</p>
-            </div>
-
-            <div class="control">
-              <label for="max-dimension">Resize</label>
-              <select id="max-dimension">
-                <option value="0" selected>Keep original size</option>
-                <option value="4096">Longest edge 4096px</option>
-                <option value="2560">Longest edge 2560px</option>
-                <option value="1920">Longest edge 1920px</option>
-                <option value="1280">Longest edge 1280px</option>
-                <option value="800">Longest edge 800px</option>
-              </select>
-              <p class="control__hint">Only ever scales down, never up.</p>
-            </div>
-
-            <div class="control">
-              <label for="target-size">Target file size</label>
-              <div class="inputrow">
-                <input
-                  id="target-size"
-                  type="text"
-                  inputmode="decimal"
-                  placeholder="e.g. 500kb"
-                  autocomplete="off"
-                />
-                <button id="target-clear" class="btn btn--ghost btn--small" type="button">Off</button>
+                <div class="control">
+                  <label for="target-size">Target file size</label>
+                  <div class="inputrow">
+                    <input
+                      id="target-size"
+                      type="text"
+                      inputmode="decimal"
+                      placeholder="e.g. 500kb"
+                      autocomplete="off"
+                    />
+                    <button id="target-clear" class="btn btn--ghost btn--small" type="button">Off</button>
+                  </div>
+                  <p class="control__hint" id="target-hint">
+                    Got an upload limit? Type the number and every file lands under it.
+                  </p>
+                </div>
               </div>
-              <p class="control__hint" id="target-hint">
-                Got an upload limit? Type the number and every file lands under it.
-              </p>
             </div>
 
-            <div class="control">
-              <label for="name-pattern">Rename files</label>
-              <input id="name-pattern" type="text" placeholder="{name}" autocomplete="off" />
-              <p class="control__hint">
-                Tokens: <code>{name}</code> <code>{n}</code> <code>{n:3}</code>
-                <code>{date}</code> <code>{w}</code> <code>{h}</code>
-              </p>
-            </div>
+            <!-- RESIZE -->
+            <div class="panel" data-panel="resize" role="tabpanel" hidden>
+              <p class="panel__lede">Scaling down only — enlarging a photo adds no detail.</p>
+              <div class="controls__grid">
+                <div class="control">
+                  <label for="resize-mode">Resize by</label>
+                  <select id="resize-mode">
+                    <option value="none" selected>Keep original size</option>
+                    <option value="longest">Longest edge</option>
+                    <option value="percent">Percentage</option>
+                    <option value="exact">Exact dimensions</option>
+                  </select>
+                  <p class="control__hint" id="resize-hint">Images keep their current size.</p>
+                </div>
 
-            <div class="control">
-              <label>Metadata</label>
-              <div class="switches">
-                <label class="switch" for="keep-exif">
-                  <input id="keep-exif" type="checkbox" checked />
-                  <span class="switch__track"><span class="switch__thumb"></span></span>
-                  <span class="switch__label">Camera info (EXIF)</span>
-                </label>
-                <label class="switch" for="keep-gps">
-                  <input id="keep-gps" type="checkbox" checked />
-                  <span class="switch__track"><span class="switch__thumb"></span></span>
-                  <span class="switch__label">Location (GPS)</span>
-                </label>
-                <label class="switch" for="keep-icc">
-                  <input id="keep-icc" type="checkbox" checked />
-                  <span class="switch__track"><span class="switch__thumb"></span></span>
-                  <span class="switch__label">Colour profile</span>
-                </label>
-                <label class="switch" for="keep-xmp">
-                  <input id="keep-xmp" type="checkbox" checked />
-                  <span class="switch__track"><span class="switch__thumb"></span></span>
-                  <span class="switch__label">XMP tags</span>
-                </label>
+                <div class="control" id="resize-longest-field" hidden>
+                  <label for="resize-longest">Longest edge (px)</label>
+                  <select id="resize-longest">
+                    <option value="4096">4096</option>
+                    <option value="2560">2560</option>
+                    <option value="1920" selected>1920</option>
+                    <option value="1280">1280</option>
+                    <option value="800">800</option>
+                    <option value="400">400</option>
+                  </select>
+                  <p class="control__hint">Whichever side is longer is capped at this.</p>
+                </div>
+
+                <div class="control" id="resize-percent-field" hidden>
+                  <label for="resize-percent">
+                    Percentage
+                    <output id="resize-percent-value" for="resize-percent">50</output>
+                  </label>
+                  <input id="resize-percent" type="range" min="5" max="100" step="5" value="50" />
+                  <p class="control__hint">Scales both sides by the same amount.</p>
+                </div>
+
+                <div class="control" id="resize-exact-field" hidden>
+                  <label>Width × height (px)</label>
+                  <div class="inputrow">
+                    <input id="resize-width" type="number" min="1" value="1920" aria-label="Width" />
+                    <span class="inputrow__x">×</span>
+                    <input id="resize-height" type="number" min="1" value="1080" aria-label="Height" />
+                  </div>
+                  <label class="switch switch--inline" for="resize-keep-aspect">
+                    <input id="resize-keep-aspect" type="checkbox" checked />
+                    <span class="switch__track"><span class="switch__thumb"></span></span>
+                    <span class="switch__label">Keep aspect ratio</span>
+                  </label>
+                  <p class="control__hint">
+                    On, images fit inside the box. Off, they are stretched to it exactly.
+                  </p>
+                </div>
               </div>
-              <p class="control__hint" id="metadata-hint">
-                Colour profile off means wide-gamut photos shift toward sRGB.
+            </div>
+
+            <!-- CROP & ROTATE -->
+            <div class="panel" data-panel="crop" role="tabpanel" hidden>
+              <p class="panel__lede">
+                Pick a ratio to crop every image at once, or open a single image to place
+                its crop by hand.
               </p>
+              <div class="controls__grid">
+                <div class="control">
+                  <label>Crop all to ratio</label>
+                  <div class="chipset" id="crop-ratios">
+                    <button class="chip" type="button" data-ratio="1:1">1:1</button>
+                    <button class="chip" type="button" data-ratio="4:3">4:3</button>
+                    <button class="chip" type="button" data-ratio="3:2">3:2</button>
+                    <button class="chip" type="button" data-ratio="16:9">16:9</button>
+                    <button class="chip" type="button" data-ratio="9:16">9:16</button>
+                    <button class="chip" type="button" data-ratio="clear">Clear</button>
+                  </div>
+                  <p class="control__hint">
+                    Applies a centred crop to every image. Use the crop button on a card to
+                    adjust one by hand.
+                  </p>
+                </div>
+
+                <div class="control">
+                  <label>Rotate &amp; flip</label>
+                  <div class="chipset">
+                    <button class="chip" type="button" id="rotate-left">⟲ Left</button>
+                    <button class="chip" type="button" id="rotate-right">⟳ Right</button>
+                    <button class="chip" type="button" id="flip-h">⇋ Flip</button>
+                    <button class="chip" type="button" id="transform-reset">Reset</button>
+                  </div>
+                  <p class="control__hint" id="transform-hint">No rotation applied.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- CONVERT -->
+            <div class="panel" data-panel="convert" role="tabpanel" hidden>
+              <p class="panel__lede">Output format, filenames and what metadata travels with them.</p>
+              <div class="controls__grid">
+                <div class="control">
+                  <label for="format">Convert to</label>
+                  <select id="format"></select>
+                  <p class="control__hint" id="format-hint">JPG is the safe universal choice.</p>
+                </div>
+
+                <div class="control">
+                  <label for="name-pattern">Rename files</label>
+                  <input id="name-pattern" type="text" placeholder="{name}" autocomplete="off" />
+                  <p class="control__hint">
+                    Tokens: <code>{name}</code> <code>{n}</code> <code>{n:3}</code>
+                    <code>{date}</code> <code>{w}</code> <code>{h}</code>
+                  </p>
+                </div>
+
+                <div class="control">
+                  <label>Metadata</label>
+                  <div class="switches">
+                    <label class="switch" for="keep-exif">
+                      <input id="keep-exif" type="checkbox" checked />
+                      <span class="switch__track"><span class="switch__thumb"></span></span>
+                      <span class="switch__label">Camera info (EXIF)</span>
+                    </label>
+                    <label class="switch" for="keep-gps">
+                      <input id="keep-gps" type="checkbox" checked />
+                      <span class="switch__track"><span class="switch__thumb"></span></span>
+                      <span class="switch__label">Location (GPS)</span>
+                    </label>
+                    <label class="switch" for="keep-icc">
+                      <input id="keep-icc" type="checkbox" checked />
+                      <span class="switch__track"><span class="switch__thumb"></span></span>
+                      <span class="switch__label">Colour profile</span>
+                    </label>
+                    <label class="switch" for="keep-xmp">
+                      <input id="keep-xmp" type="checkbox" checked />
+                      <span class="switch__track"><span class="switch__thumb"></span></span>
+                      <span class="switch__label">XMP tags</span>
+                    </label>
+                  </div>
+                  <p class="control__hint">
+                    Colour profile off means wide-gamut photos shift toward sRGB.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -170,7 +276,7 @@
         <section id="results" class="results" hidden>
           <div class="results__head">
             <div>
-              <h2 id="results-title">Converted</h2>
+              <h2 id="results-title">Processed</h2>
               <p class="results__progress" id="results-progress"></p>
             </div>
             <div class="results__actions">

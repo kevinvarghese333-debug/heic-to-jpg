@@ -4,6 +4,7 @@ import {
   formatLabel,
   type OutputFormat,
 } from './lib/capabilities';
+import { kindLabel } from './lib/detect';
 import { describeExif, readGpsPosition } from './lib/exif';
 import {
   applyNamePattern,
@@ -14,10 +15,11 @@ import {
   percentChange,
   saveBlob,
 } from './lib/format';
+import { describeResize } from './lib/geometry';
 import { subscribeNetStats } from './lib/netGuard';
 import { buildZip, canStreamToDisk, streamZipToDisk } from './lib/zip';
 import { Converter } from './state';
-import type { ItemOverride, QueueItem } from './types';
+import type { CropRect, ItemOverride, QueueItem, ResizeMode, Tool } from './types';
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -33,15 +35,37 @@ const unsupported = el<HTMLElement>('unsupported');
 const unsupportedDetail = el<HTMLElement>('unsupported-detail');
 
 const controls = el<HTMLElement>('controls');
-const formatSelect = el<HTMLSelectElement>('format');
-const formatHint = el<HTMLElement>('format-hint');
+const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.tab'));
+const panels = Array.from(document.querySelectorAll<HTMLElement>('.panel'));
+
 const qualityInput = el<HTMLInputElement>('quality');
 const qualityValue = el<HTMLOutputElement>('quality-value');
 const qualityHint = el<HTMLElement>('quality-hint');
-const maxDimensionSelect = el<HTMLSelectElement>('max-dimension');
 const targetSizeInput = el<HTMLInputElement>('target-size');
 const targetClearButton = el<HTMLButtonElement>('target-clear');
 const targetHint = el<HTMLElement>('target-hint');
+
+const resizeModeSelect = el<HTMLSelectElement>('resize-mode');
+const resizeHint = el<HTMLElement>('resize-hint');
+const resizeLongestField = el<HTMLElement>('resize-longest-field');
+const resizeLongestSelect = el<HTMLSelectElement>('resize-longest');
+const resizePercentField = el<HTMLElement>('resize-percent-field');
+const resizePercentInput = el<HTMLInputElement>('resize-percent');
+const resizePercentValue = el<HTMLOutputElement>('resize-percent-value');
+const resizeExactField = el<HTMLElement>('resize-exact-field');
+const resizeWidthInput = el<HTMLInputElement>('resize-width');
+const resizeHeightInput = el<HTMLInputElement>('resize-height');
+const resizeKeepAspect = el<HTMLInputElement>('resize-keep-aspect');
+
+const cropRatios = el<HTMLElement>('crop-ratios');
+const rotateLeftButton = el<HTMLButtonElement>('rotate-left');
+const rotateRightButton = el<HTMLButtonElement>('rotate-right');
+const flipButton = el<HTMLButtonElement>('flip-h');
+const transformResetButton = el<HTMLButtonElement>('transform-reset');
+const transformHint = el<HTMLElement>('transform-hint');
+
+const formatSelect = el<HTMLSelectElement>('format');
+const formatHint = el<HTMLElement>('format-hint');
 const namePatternInput = el<HTMLInputElement>('name-pattern');
 const keepExifInput = el<HTMLInputElement>('keep-exif');
 const keepGpsInput = el<HTMLInputElement>('keep-gps');
@@ -99,9 +123,11 @@ function makeElement<K extends keyof HTMLElementTagNameMap>(
 }
 
 let lastFocused: HTMLElement | null = null;
+let onModalClose: (() => void) | null = null;
 
-function openModal(title: string, body: HTMLElement): void {
+function openModal(title: string, body: HTMLElement, onClose?: () => void): void {
   lastFocused = document.activeElement as HTMLElement | null;
+  onModalClose = onClose ?? null;
   modalTitle.textContent = title;
   modalBody.replaceChildren(body);
   modal.hidden = false;
@@ -111,6 +137,8 @@ function openModal(title: string, body: HTMLElement): void {
 function closeModal(): void {
   modal.hidden = true;
   modalBody.replaceChildren();
+  onModalClose?.();
+  onModalClose = null;
   lastFocused?.focus();
 }
 
@@ -153,6 +181,26 @@ const converter = new Converter({
   onQueueChanged: syncChrome,
 });
 
+/* ------------------------------------------------------------------- tabs */
+
+function selectTool(tool: Tool): void {
+  for (const tab of tabs) {
+    const active = tab.dataset.tool === tool;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-selected', String(active));
+  }
+  for (const panel of panels) {
+    const active = panel.dataset.panel === tool;
+    panel.classList.toggle('is-active', active);
+    panel.hidden = !active;
+  }
+  converter.settings.tool = tool;
+}
+
+for (const tab of tabs) {
+  tab.addEventListener('click', () => selectTool(tab.dataset.tool as Tool));
+}
+
 /* ------------------------------------------------------------------- cards */
 
 interface CardRefs {
@@ -164,6 +212,7 @@ interface CardRefs {
   delta: HTMLElement;
   note: HTMLElement;
   download: HTMLButtonElement;
+  crop: HTMLButtonElement;
   compare: HTMLButtonElement;
   details: HTMLButtonElement;
 }
@@ -204,26 +253,26 @@ function createCard(item: QueueItem): void {
     if (item.outBlob) saveBlob(item.outBlob, item.outName);
   });
 
-  const compare = makeElement('button', 'iconbtn', '◐');
-  compare.type = 'button';
-  compare.title = 'Compare with original';
-  compare.setAttribute('aria-label', `Compare ${item.file.name} with the original`);
-  compare.disabled = true;
-  compare.addEventListener('click', () => void openCompare(item));
+  const makeIcon = (glyph: string, title: string, handler: () => void) => {
+    const button = makeElement('button', 'iconbtn', glyph);
+    button.type = 'button';
+    button.title = title;
+    button.setAttribute('aria-label', `${title} — ${item.file.name}`);
+    button.disabled = true;
+    button.addEventListener('click', handler);
+    return button;
+  };
 
-  const details = makeElement('button', 'iconbtn', 'i');
-  details.type = 'button';
-  details.title = 'Details, metadata and per-file settings';
-  details.setAttribute('aria-label', `Details for ${item.file.name}`);
-  details.disabled = true;
-  details.addEventListener('click', () => openDetails(item));
+  const crop = makeIcon('⛶', 'Crop this image', () => openCropEditor(item));
+  const compare = makeIcon('◐', 'Compare with original', () => void openCompare(item));
+  const details = makeIcon('i', 'Details and metadata', () => openDetails(item));
 
-  actions.append(download, compare, details);
+  actions.append(download, crop, compare, details);
   body.append(name, meta, delta, note, actions);
   root.append(thumb, body);
   grid.appendChild(root);
 
-  cards.set(item.id, { root, image, badge, name, meta, delta, note, download, compare, details });
+  cards.set(item.id, { root, image, badge, name, meta, delta, note, download, crop, compare, details });
   updateCard(item);
 }
 
@@ -248,6 +297,7 @@ function updateCard(item: QueueItem): void {
     refs.delta.textContent = item.error ?? 'Conversion failed';
     refs.note.textContent = '';
     refs.download.disabled = true;
+    refs.crop.disabled = true;
     refs.compare.disabled = true;
     refs.details.disabled = true;
     refs.download.textContent = item.status === 'cancelled' ? 'Cancelled' : 'Failed';
@@ -255,28 +305,185 @@ function updateCard(item: QueueItem): void {
   }
 
   if (item.status === 'decoding' || item.status === 'queued') {
-    refs.meta.textContent = item.status === 'queued' ? 'Waiting…' : 'Decoding…';
+    refs.meta.textContent = item.status === 'queued' ? 'Waiting…' : 'Reading…';
     refs.delta.textContent = '';
     return;
   }
 
   if (item.outBlob) {
-    const resized = item.outWidth !== item.srcWidth;
-    refs.meta.textContent = `${item.outWidth}×${item.outHeight}${resized ? ' ↓' : ''} · ${formatBytes(item.outSize)}`;
+    const resized = item.outWidth !== item.srcWidth || item.outHeight !== item.srcHeight;
+    const marks = [`${item.outWidth}×${item.outHeight}`];
+    if (resized) marks.push('↓');
+    if (item.crop) marks.push('✂');
+    refs.meta.textContent = `${marks.join(' ')} · ${formatBytes(item.outSize)}`;
     refs.delta.className = 'card__delta';
     const change = percentChange(item.file.size, item.outSize);
     refs.delta.classList.toggle('is-larger', change.endsWith('larger'));
-    refs.delta.textContent = change ? `${formatBytes(item.file.size)} → ${change}` : '';
+    refs.delta.textContent = change
+      ? `${kindLabel(item.kind)} ${formatBytes(item.file.size)} → ${change}`
+      : '';
     refs.note.textContent = item.notes.length > 0 ? item.notes[0] : '';
     refs.download.disabled = item.encoding;
     refs.download.textContent = item.encoding ? 'Updating…' : 'Download';
+    refs.crop.disabled = false;
     refs.compare.disabled = item.encoding;
     refs.details.disabled = false;
   } else {
-    refs.meta.textContent = 'Encoding…';
+    refs.meta.textContent = 'Processing…';
     refs.delta.textContent = '';
     refs.download.disabled = true;
   }
+}
+
+/* -------------------------------------------------------------- crop editor */
+
+type Handle = 'move' | 'nw' | 'ne' | 'sw' | 'se';
+
+function openCropEditor(item: QueueItem): void {
+  if (!item.thumbUrl) return;
+
+  const container = makeElement('div', 'cropper');
+  container.appendChild(
+    makeElement('p', 'modal__lede', 'Drag inside to move, or pull a corner to resize.'),
+  );
+
+  const stage = makeElement('div', 'cropper__stage');
+  const image = makeElement('img', 'cropper__img');
+  image.src = item.thumbUrl;
+  image.alt = '';
+  stage.appendChild(image);
+
+  const shade = makeElement('div', 'cropper__shade');
+  const rect = makeElement('div', 'cropper__rect');
+  for (const corner of ['nw', 'ne', 'sw', 'se'] as const) {
+    const handle = makeElement('span', `cropper__handle cropper__handle--${corner}`);
+    handle.dataset.handle = corner;
+    rect.appendChild(handle);
+  }
+  stage.append(shade, rect);
+  container.appendChild(stage);
+
+  const readout = makeElement('p', 'cropper__readout');
+  container.appendChild(readout);
+
+  let crop: CropRect = item.crop ?? { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+
+  const paint = () => {
+    rect.style.left = `${crop.x * 100}%`;
+    rect.style.top = `${crop.y * 100}%`;
+    rect.style.width = `${crop.width * 100}%`;
+    rect.style.height = `${crop.height * 100}%`;
+    const px = Math.round(crop.width * item.srcWidth);
+    const py = Math.round(crop.height * item.srcHeight);
+    readout.textContent = `${px} × ${py} px — ${Math.round(crop.width * 100)}% × ${Math.round(crop.height * 100)}% of the original`;
+  };
+  paint();
+
+  let active: Handle | null = null;
+  let startX = 0;
+  let startY = 0;
+  let startCrop = crop;
+
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+  stage.addEventListener('pointerdown', (event) => {
+    const target = event.target as HTMLElement;
+    const handle = target.dataset.handle as Handle | undefined;
+    if (!handle && target !== rect) return;
+    active = handle ?? 'move';
+    startX = event.clientX;
+    startY = event.clientY;
+    startCrop = { ...crop };
+    stage.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  stage.addEventListener('pointermove', (event) => {
+    if (!active) return;
+    const bounds = stage.getBoundingClientRect();
+    const dx = (event.clientX - startX) / bounds.width;
+    const dy = (event.clientY - startY) / bounds.height;
+    const MIN = 0.05;
+
+    if (active === 'move') {
+      crop = {
+        ...startCrop,
+        x: clamp(startCrop.x + dx, 0, 1 - startCrop.width),
+        y: clamp(startCrop.y + dy, 0, 1 - startCrop.height),
+      };
+    } else {
+      let { x, y, width, height } = startCrop;
+      if (active === 'nw' || active === 'sw') {
+        const nx = clamp(startCrop.x + dx, 0, startCrop.x + startCrop.width - MIN);
+        width = startCrop.x + startCrop.width - nx;
+        x = nx;
+      } else {
+        width = clamp(startCrop.width + dx, MIN, 1 - startCrop.x);
+      }
+      if (active === 'nw' || active === 'ne') {
+        const ny = clamp(startCrop.y + dy, 0, startCrop.y + startCrop.height - MIN);
+        height = startCrop.y + startCrop.height - ny;
+        y = ny;
+      } else {
+        height = clamp(startCrop.height + dy, MIN, 1 - startCrop.y);
+      }
+      crop = { x, y, width, height };
+    }
+    paint();
+  });
+
+  const release = () => {
+    active = null;
+  };
+  stage.addEventListener('pointerup', release);
+  stage.addEventListener('pointercancel', release);
+
+  const buttons = makeElement('div', 'cropper__buttons');
+  const apply = makeElement('button', 'btn btn--primary', 'Apply crop');
+  apply.type = 'button';
+  apply.addEventListener('click', () => {
+    converter.setCrop(item.id, crop);
+    closeModal();
+    showToast('Crop applied');
+  });
+
+  const clear = makeElement('button', 'btn btn--ghost', 'Remove crop');
+  clear.type = 'button';
+  clear.addEventListener('click', () => {
+    converter.setCrop(item.id, null);
+    closeModal();
+  });
+
+  buttons.append(apply, clear);
+  container.appendChild(buttons);
+
+  openModal(`Crop — ${item.file.name}`, container);
+}
+
+/** Centres a crop of the given aspect ratio inside every queued image. */
+function applyRatioToAll(ratio: number | null): void {
+  const items = converter.items.filter((item) => item.status === 'ready');
+  if (items.length === 0) return;
+
+  for (const item of items) {
+    if (ratio === null) {
+      converter.setCrop(item.id, null);
+      continue;
+    }
+    const sourceRatio = item.srcWidth / item.srcHeight;
+    let width = 1;
+    let height = 1;
+    if (sourceRatio > ratio) width = ratio / sourceRatio;
+    else height = sourceRatio / ratio;
+
+    converter.setCrop(item.id, {
+      x: (1 - width) / 2,
+      y: (1 - height) / 2,
+      width,
+      height,
+    });
+  }
+  showToast(ratio === null ? 'Crops removed' : `Cropped ${items.length} image${items.length === 1 ? '' : 's'}`);
 }
 
 /* -------------------------------------------------------------- modals */
@@ -285,7 +492,9 @@ async function openCompare(item: QueueItem): Promise<void> {
   if (!item.outBlob) return;
 
   const container = makeElement('div', 'compare');
-  container.appendChild(makeElement('p', 'modal__lede', 'Drag the divider to compare the original against the converted file.'));
+  container.appendChild(
+    makeElement('p', 'modal__lede', 'Drag the divider to compare the original against the result.'),
+  );
 
   const stage = makeElement('div', 'compare__stage');
   const loading = makeElement('p', 'compare__loading', 'Rendering the original…');
@@ -293,12 +502,16 @@ async function openCompare(item: QueueItem): Promise<void> {
   container.appendChild(stage);
 
   const stats = makeElement('p', 'compare__stats');
-  stats.textContent = `Original ${formatBytes(item.file.size)} · Converted ${formatBytes(item.outSize)} · quality ${Math.round(item.qualityUsed * 100)}`;
+  stats.textContent = `Original ${formatBytes(item.file.size)} · Result ${formatBytes(item.outSize)} · quality ${Math.round(item.qualityUsed * 100)}`;
   container.appendChild(stats);
 
-  openModal(item.outName, container);
+  let originalUrl: string | null = null;
+  let outputUrl: string | null = null;
+  openModal(item.outName, container, () => {
+    if (originalUrl) URL.revokeObjectURL(originalUrl);
+    if (outputUrl) URL.revokeObjectURL(outputUrl);
+  });
 
-  let originalUrl: string;
   try {
     originalUrl = await converter.renderSourcePreview(item.id);
   } catch {
@@ -306,32 +519,32 @@ async function openCompare(item: QueueItem): Promise<void> {
     return;
   }
 
-  const outputUrl = URL.createObjectURL(item.outBlob);
+  outputUrl = URL.createObjectURL(item.outBlob);
   const before = makeElement('img', 'compare__img compare__img--before');
   before.src = originalUrl;
   before.alt = 'Original';
   const afterWrap = makeElement('div', 'compare__after');
   const after = makeElement('img', 'compare__img');
   after.src = outputUrl;
-  after.alt = 'Converted';
+  after.alt = 'Result';
   afterWrap.appendChild(after);
 
   const handle = makeElement('div', 'compare__handle');
   const labelBefore = makeElement('span', 'compare__tag compare__tag--left', 'Original');
-  const labelAfter = makeElement('span', 'compare__tag compare__tag--right', 'Converted');
+  const labelAfter = makeElement('span', 'compare__tag compare__tag--right', 'Result');
 
   stage.replaceChildren(before, afterWrap, handle, labelBefore, labelAfter);
 
-  const setPosition = (ratio: number) => {
-    const clamped = Math.max(0, Math.min(1, ratio));
+  const setPosition = (value: number) => {
+    const clamped = Math.max(0, Math.min(1, value));
     afterWrap.style.width = `${clamped * 100}%`;
     handle.style.left = `${clamped * 100}%`;
   };
   setPosition(0.5);
 
   const onPointer = (event: PointerEvent) => {
-    const rect = stage.getBoundingClientRect();
-    setPosition((event.clientX - rect.left) / rect.width);
+    const bounds = stage.getBoundingClientRect();
+    setPosition((event.clientX - bounds.left) / bounds.width);
   };
   stage.addEventListener('pointerdown', (event) => {
     stage.setPointerCapture(event.pointerId);
@@ -340,19 +553,11 @@ async function openCompare(item: QueueItem): Promise<void> {
   stage.addEventListener('pointermove', (event) => {
     if (event.buttons > 0) onPointer(event);
   });
-
-  // Object URLs are released when the modal closes.
-  const cleanup = () => {
-    URL.revokeObjectURL(originalUrl);
-    URL.revokeObjectURL(outputUrl);
-  };
-  modalClose.addEventListener('click', cleanup, { once: true });
 }
 
 function openDetails(item: QueueItem): void {
   const container = makeElement('div', 'details');
 
-  /* --- per-file overrides --- */
   const overrideSection = makeElement('section', 'details__section');
   overrideSection.appendChild(makeElement('h3', undefined, 'This file only'));
 
@@ -411,15 +616,23 @@ function openDetails(item: QueueItem): void {
 
   container.appendChild(overrideSection);
 
-  /* --- metadata studio --- */
+  const sourceSection = makeElement('section', 'details__section');
+  sourceSection.appendChild(makeElement('h3', undefined, 'Source'));
+  sourceSection.appendChild(
+    makeElement(
+      'p',
+      'details__extras',
+      `${kindLabel(item.kind)} · ${item.srcWidth}×${item.srcHeight} · ${formatBytes(item.file.size)}`,
+    ),
+  );
+  container.appendChild(sourceSection);
+
   const metaSection = makeElement('section', 'details__section');
   metaSection.appendChild(makeElement('h3', undefined, 'Metadata'));
 
   const exif = item.metadata.exif;
   if (!exif) {
-    metaSection.appendChild(
-      makeElement('p', 'details__empty', 'This file carries no EXIF metadata.'),
-    );
+    metaSection.appendChild(makeElement('p', 'details__empty', 'This file carries no EXIF metadata.'));
   } else {
     const gps = readGpsPosition(exif);
     if (gps) {
@@ -427,17 +640,16 @@ function openDetails(item: QueueItem): void {
       warning.append(
         makeElement('strong', undefined, 'This photo knows where it was taken. '),
         document.createTextNode(
-          `${gps.latitude.toFixed(5)}, ${gps.longitude.toFixed(5)} — remove the GPS rows below, or switch Location off in the main settings, before sharing it publicly.`,
+          `${gps.latitude.toFixed(5)}, ${gps.longitude.toFixed(5)} — remove the GPS rows below, or switch Location off under Convert, before sharing it publicly.`,
         ),
       );
       metaSection.appendChild(warning);
     }
 
-    const fields = describeExif(exif);
     const table = makeElement('table', 'metatable');
     const tbody = makeElement('tbody');
 
-    for (const field of fields) {
+    for (const field of describeExif(exif)) {
       const key = `${field.ifd}:${field.tag}`;
       const row = makeElement('tr');
       if (item.strippedKeys.has(key)) row.classList.add('is-stripped');
@@ -449,7 +661,6 @@ function openDetails(item: QueueItem): void {
       );
 
       const valueCell = makeElement('td', 'metatable__value', field.display);
-
       const actionCell = makeElement('td', 'metatable__action');
       const strip = makeElement('button', 'linkbutton');
       strip.type = 'button';
@@ -496,8 +707,9 @@ function openDetails(item: QueueItem): void {
 function openTrustPanel(): void {
   const container = makeElement('div', 'prose');
   container.innerHTML = `
-    <p>This page converts your photos using WebAssembly running inside your own browser.
-       There is no server to upload to. Here is how to confirm that rather than take our word:</p>
+    <p>This page processes your images using WebAssembly and your browser's own
+       encoders, inside your own tab. There is no server to upload to. Here is how to
+       confirm that rather than take our word:</p>
     <ol>
       <li><strong>Turn off your wifi</strong>, then convert a photo. It still works — because
           nothing is being sent or fetched.</li>
@@ -525,9 +737,9 @@ function openTrustPanel(): void {
 function openAboutPanel(): void {
   const container = makeElement('div', 'prose');
   container.innerHTML = `
-    <p>A browser-based HEIC/HEIF converter. Decoding is done by
-       <strong>libheif</strong> compiled to WebAssembly; encoding uses your browser's own
-       image encoders.</p>
+    <p>A browser-based image toolkit: compress, resize, crop, rotate and convert.
+       HEIC decoding is done by <strong>libheif</strong> compiled to WebAssembly;
+       everything else uses your browser's own image decoders and encoders.</p>
     <h3>Licences</h3>
     <p><strong>libheif</strong> — LGPL-2.1-or-later.
        Source: <code>https://github.com/strukturag/libheif</code>.
@@ -536,9 +748,8 @@ function openAboutPanel(): void {
     <p><strong>libde265</strong> (HEVC decoding, bundled inside the libheif build) — LGPL-3.0.</p>
     <p><strong>fflate</strong> — MIT, used for ZIP writing and PNG chunk compression.</p>
     <h3>Formats</h3>
-    <p>Reads HEIC, HEIF and AVIF containers, including Apple's tiled-grid layout used for
-       large iPhone photos. Writes JPG, PNG, WebP and AVIF where your browser supports them,
-       plus PDF.</p>
+    <p>Reads HEIC, HEIF, AVIF, JPG, PNG, WebP, GIF and BMP. Writes JPG, PNG, WebP and
+       AVIF where your browser supports them, plus PDF.</p>
     <p class="prose__note">EXIF, ICC colour profiles and XMP are carried into JPG and PNG.
        WebP and AVIF output does not carry metadata.</p>
   `;
@@ -557,13 +768,13 @@ function syncChrome(): void {
 
   document.body.classList.toggle('has-files', hasItems);
   dropzone.classList.toggle('is-compact', hasItems);
-  dropzoneTitle.textContent = hasItems ? 'Add more photos' : 'Drop HEIC photos here';
+  dropzoneTitle.textContent = hasItems ? 'Add more images' : 'Drop images here';
 
   if (!hasItems) return;
 
   const parts = [`${ready} of ${total} ready`];
   if (failed > 0) parts.push(`${failed} failed`);
-  resultsTitle.textContent = `Converted · ${parts.join(' · ')}`;
+  resultsTitle.textContent = `Processed · ${parts.join(' · ')}`;
 
   cancelButton.hidden = !busy;
 
@@ -572,7 +783,7 @@ function syncChrome(): void {
     const eta = etaMs ? ` · about ${formatDuration(etaMs)} left` : '';
     resultsProgress.textContent = `Working on ${done + 1} of ${total}${eta}`;
   } else {
-    resultsProgress.textContent = total > 0 ? `${formatBytes(converter.totalOutputSize)} total` : '';
+    resultsProgress.textContent = `${formatBytes(converter.totalOutputSize)} total`;
   }
 
   actionbarSummary.replaceChildren(
@@ -585,8 +796,7 @@ function syncChrome(): void {
   const canDownload = ready > 0 && !busy;
   downloadZipButton.disabled = !canDownload;
   downloadPdfButton.disabled = !canDownload;
-  downloadZipButton.textContent =
-    ready === 1 ? 'Download file' : `Download all as ZIP (${ready})`;
+  downloadZipButton.textContent = ready === 1 ? 'Download file' : `Download all as ZIP (${ready})`;
 }
 
 /* ---------------------------------------------------------- input wiring */
@@ -595,7 +805,7 @@ function acceptFiles(fileList: FileList | null): void {
   if (!fileList || fileList.length === 0) return;
   const files = Array.from(fileList);
   converter.addFiles(files);
-  announce(`${files.length} file${files.length === 1 ? '' : 's'} added, converting.`);
+  announce(`${files.length} file${files.length === 1 ? '' : 's'} added.`);
 }
 
 dropzone.addEventListener('click', () => fileInput.click());
@@ -630,12 +840,7 @@ window.addEventListener('drop', (event) => {
   acceptFiles(event.dataTransfer?.files ?? null);
 });
 
-formatSelect.addEventListener('change', () => {
-  const format = formatSelect.value as OutputFormat;
-  formatHint.textContent = FORMAT_NOTES[format];
-  qualityInput.disabled = format === 'image/png';
-  converter.updateSettings({ format });
-});
+/* --------- compress --------- */
 
 qualityInput.addEventListener('input', () => {
   const quality = Number(qualityInput.value);
@@ -644,10 +849,6 @@ qualityInput.addEventListener('input', () => {
 });
 qualityInput.addEventListener('change', () =>
   converter.updateSettings({ quality: Number(qualityInput.value) / 100 }),
-);
-
-maxDimensionSelect.addEventListener('change', () =>
-  converter.updateSettings({ maxDimension: Number(maxDimensionSelect.value) }),
 );
 
 function commitTargetSize(): void {
@@ -665,6 +866,90 @@ targetSizeInput.addEventListener('change', commitTargetSize);
 targetClearButton.addEventListener('click', () => {
   targetSizeInput.value = '';
   commitTargetSize();
+});
+
+/* --------- resize --------- */
+
+function commitResize(): void {
+  const mode = resizeModeSelect.value as ResizeMode;
+  resizeLongestField.hidden = mode !== 'longest';
+  resizePercentField.hidden = mode !== 'percent';
+  resizeExactField.hidden = mode !== 'exact';
+
+  const resize = {
+    mode,
+    longest: Number(resizeLongestSelect.value),
+    width: Math.max(1, Number(resizeWidthInput.value) || 1),
+    height: Math.max(1, Number(resizeHeightInput.value) || 1),
+    keepAspect: resizeKeepAspect.checked,
+    percent: Number(resizePercentInput.value),
+  };
+  resizeHint.textContent =
+    mode === 'none' ? 'Images keep their current size.' : describeResize(resize);
+  converter.updateSettings({ resize });
+}
+
+resizeModeSelect.addEventListener('change', commitResize);
+resizeLongestSelect.addEventListener('change', commitResize);
+resizePercentInput.addEventListener('input', () => {
+  resizePercentValue.textContent = resizePercentInput.value;
+});
+resizePercentInput.addEventListener('change', commitResize);
+resizeWidthInput.addEventListener('change', commitResize);
+resizeHeightInput.addEventListener('change', commitResize);
+resizeKeepAspect.addEventListener('change', commitResize);
+
+/* --------- crop & rotate --------- */
+
+cropRatios.addEventListener('click', (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.chip');
+  if (!button) return;
+  const value = button.dataset.ratio;
+  if (!value) return;
+
+  for (const chip of cropRatios.querySelectorAll('.chip')) chip.classList.remove('is-active');
+  if (value === 'clear') {
+    applyRatioToAll(null);
+    return;
+  }
+  button.classList.add('is-active');
+  const [w, h] = value.split(':').map(Number);
+  applyRatioToAll(w / h);
+});
+
+function describeTransform(): string {
+  const { rotate, flipHorizontal } = converter.settings;
+  if (rotate === 0 && !flipHorizontal) return 'No rotation applied.';
+  const parts: string[] = [];
+  if (rotate !== 0) parts.push(`Rotated ${rotate}°`);
+  if (flipHorizontal) parts.push('flipped horizontally');
+  return `${parts.join(', ')}.`;
+}
+
+function turn(delta: number): void {
+  const next = (((converter.settings.rotate + delta) % 360) + 360) % 360;
+  converter.updateSettings({ rotate: next as 0 | 90 | 180 | 270 });
+  transformHint.textContent = describeTransform();
+}
+
+rotateLeftButton.addEventListener('click', () => turn(-90));
+rotateRightButton.addEventListener('click', () => turn(90));
+flipButton.addEventListener('click', () => {
+  converter.updateSettings({ flipHorizontal: !converter.settings.flipHorizontal });
+  transformHint.textContent = describeTransform();
+});
+transformResetButton.addEventListener('click', () => {
+  converter.updateSettings({ rotate: 0, flipHorizontal: false });
+  transformHint.textContent = describeTransform();
+});
+
+/* --------- convert --------- */
+
+formatSelect.addEventListener('change', () => {
+  const format = formatSelect.value as OutputFormat;
+  formatHint.textContent = FORMAT_NOTES[format];
+  qualityInput.disabled = format === 'image/png';
+  converter.updateSettings({ format });
 });
 
 namePatternInput.addEventListener('change', () => {
@@ -686,10 +971,12 @@ keepGpsInput.addEventListener('change', () => converter.updateSettings({ keepGps
 keepIccInput.addEventListener('change', () => converter.updateSettings({ keepIcc: keepIccInput.checked }));
 keepXmpInput.addEventListener('change', () => converter.updateSettings({ keepXmp: keepXmpInput.checked }));
 
+/* --------- queue actions --------- */
+
 cancelButton.addEventListener('click', () => {
   converter.cancel();
-  showToast('Stopped. Files already converted are still here.');
-  announce('Conversion cancelled.');
+  showToast('Stopped. Files already processed are still here.');
+  announce('Processing cancelled.');
 });
 
 clearButton.addEventListener('click', () => {
@@ -729,19 +1016,17 @@ downloadZipButton.addEventListener('click', async () => {
     const HUGE_BATCH = 250 * 1024 * 1024;
 
     if (totalBytes > HUGE_BATCH && canStreamToDisk()) {
-      const outcome = await streamZipToDisk(entries, 'converted-photos.zip', onProgress);
+      const outcome = await streamZipToDisk(entries, 'processed-images.zip', onProgress);
       if (outcome === 'saved') {
         showToast(`${ready.length} files written to your chosen location`);
         return;
       }
-      // Dismissing the dialog means they don't want the file — don't then
-      // force a download on them.
       if (outcome === 'cancelled') return;
     }
 
     const zipBlob = await buildZip(entries, onProgress);
-    saveBlob(zipBlob, 'converted-photos.zip');
-    showToast(`${ready.length} photos zipped · ${formatBytes(zipBlob.size)}`);
+    saveBlob(zipBlob, 'processed-images.zip');
+    showToast(`${ready.length} images zipped · ${formatBytes(zipBlob.size)}`);
   } catch (error) {
     showToast((error as Error).message || 'Could not build the ZIP');
   } finally {
@@ -759,7 +1044,7 @@ downloadPdfButton.addEventListener('click', () => {
     makeElement(
       'p',
       'modal__lede',
-      `Combine ${ready.length} photo${ready.length === 1 ? '' : 's'} into a single PDF, one per page, in the order shown.`,
+      `Combine ${ready.length} image${ready.length === 1 ? '' : 's'} into a single PDF, one per page, in the order shown.`,
     ),
   );
 
@@ -768,7 +1053,7 @@ downloadPdfButton.addEventListener('click', () => {
   const modeSelect = makeElement('select');
   const a4 = makeElement('option', undefined, 'A4 with margins (best for documents)');
   a4.value = 'a4';
-  const match = makeElement('option', undefined, 'Match each photo exactly (no borders)');
+  const match = makeElement('option', undefined, 'Match each image exactly (no borders)');
   match.value = 'match';
   modeSelect.append(a4, match);
   modeField.appendChild(modeSelect);
@@ -784,7 +1069,7 @@ downloadPdfButton.addEventListener('click', () => {
         mode: modeSelect.value as 'a4' | 'match',
         margin: 28,
       });
-      saveBlob(blob, 'photos.pdf');
+      saveBlob(blob, 'images.pdf');
       closeModal();
       showToast(`PDF built · ${formatBytes(blob.size)}`);
     } catch (error) {
@@ -829,6 +1114,7 @@ function boot(): void {
   populateFormats();
   qualityHint.textContent = qualityDescription(Number(qualityInput.value));
   formatHint.textContent = FORMAT_NOTES[converter.settings.format];
+  transformHint.textContent = describeTransform();
   syncChrome();
 
   void detectEncodableFormats().then((formats) => {

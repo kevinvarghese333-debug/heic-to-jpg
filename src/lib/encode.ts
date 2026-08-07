@@ -1,7 +1,9 @@
 import type { OutputFormat } from './capabilities';
 import { applyOutputCorrections, fitExifToSegment, type ExifData } from './exif';
+import { baseSize, resolveResize, sourceRect } from './geometry';
 import { buildExifSegment, buildIccSegments, buildXmpSegment, insertJpegSegments } from './jpegSegments';
 import { addPngMetadata } from './pngChunks';
+import type { CropRect, ResizeSpec } from '../types';
 
 export interface MetadataPayload {
   /** Parsed EXIF model, already filtered to whatever the user chose to keep */
@@ -14,8 +16,12 @@ export interface EncodeOptions {
   format: OutputFormat;
   /** 0.3–1.0; ignored by PNG, which is lossless */
   quality: number;
-  /** Longest-edge cap in px; 0 keeps the original size */
-  maxDimension: number;
+  resize: ResizeSpec;
+  /** Normalised crop, applied before rotation */
+  crop: CropRect | null;
+  /** Clockwise rotation in degrees */
+  rotate: 0 | 90 | 180 | 270;
+  flipHorizontal: boolean;
   /** Desired maximum output size in bytes; 0 disables the search */
   targetBytes: number;
   metadata: MetadataPayload;
@@ -105,14 +111,45 @@ function flattenOntoWhite(canvas: AnyCanvas): AnyCanvas {
   return flattened;
 }
 
-function targetDimensions(bitmap: ImageBitmap, maxDimension: number, extraScale = 1): { width: number; height: number } {
-  const longestEdge = Math.max(bitmap.width, bitmap.height);
-  const capScale = maxDimension > 0 ? Math.min(1, maxDimension / longestEdge) : 1;
-  const scale = capScale * extraScale;
-  return {
-    width: Math.max(1, Math.round(bitmap.width * scale)),
-    height: Math.max(1, Math.round(bitmap.height * scale)),
-  };
+function targetDimensions(bitmap: ImageBitmap, options: EncodeOptions, extraScale = 1): { width: number; height: number } {
+  const base = baseSize(bitmap, options.crop, options.rotate);
+  return resolveResize(base, options.resize, extraScale);
+}
+
+/**
+ * Applies crop, rotation and flip, returning something drawable at the
+ * post-transform size. When nothing is transformed the bitmap is handed back
+ * untouched so the common path costs nothing.
+ */
+function renderSource(
+  bitmap: ImageBitmap,
+  options: EncodeOptions,
+): { source: CanvasImageSource; width: number; height: number } {
+  const { sx, sy, sw, sh } = sourceRect(bitmap, options.crop);
+  const untouched =
+    options.rotate === 0 &&
+    !options.flipHorizontal &&
+    sx === 0 &&
+    sy === 0 &&
+    sw === bitmap.width &&
+    sh === bitmap.height;
+
+  if (untouched) return { source: bitmap, width: bitmap.width, height: bitmap.height };
+
+  const swapped = options.rotate === 90 || options.rotate === 270;
+  const width = swapped ? sh : sw;
+  const height = swapped ? sw : sh;
+
+  const canvas = createCanvas(width, height);
+  const ctx = context2d(canvas);
+  ctx.save();
+  ctx.translate(width / 2, height / 2);
+  ctx.rotate((options.rotate * Math.PI) / 180);
+  if (options.flipHorizontal) ctx.scale(-1, 1);
+  ctx.drawImage(bitmap, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
+  ctx.restore();
+
+  return { source: canvas as CanvasImageSource, width, height };
 }
 
 /** Builds the metadata bytes and reports how much space they will take. */
@@ -191,12 +228,13 @@ function prepareMetadata(
  * prepares a canvas once per dimension and then only re-runs the encoder.
  */
 function prepareCanvas(bitmap: ImageBitmap, options: EncodeOptions, width: number, height: number): AnyCanvas {
-  const canvas = drawScaled(bitmap, bitmap.width, bitmap.height, width, height);
+  const rendered = renderSource(bitmap, options);
+  const canvas = drawScaled(rendered.source, rendered.width, rendered.height, width, height);
   return options.format === 'image/jpeg' ? flattenOntoWhite(canvas) : canvas;
 }
 
 export async function encodeImage(bitmap: ImageBitmap, options: EncodeOptions): Promise<EncodeResult> {
-  const { width, height } = targetDimensions(bitmap, options.maxDimension);
+  const { width, height } = targetDimensions(bitmap, options);
   const meta = prepareMetadata(options, width, height);
   const notes = [...meta.notes];
 
@@ -238,7 +276,7 @@ export async function encodeImage(bitmap: ImageBitmap, options: EncodeOptions): 
   const FLOOR_QUALITY = 0.3;
   const ceiling = Math.min(0.98, options.quality);
 
-  let dims = targetDimensions(bitmap, options.maxDimension, 1);
+  let dims = targetDimensions(bitmap, options, 1);
   let canvas = prepareCanvas(bitmap, options, dims.width, dims.height);
   let quality = ceiling;
   // Definitely assigned: every branch below either encodes or falls through to
@@ -314,7 +352,7 @@ export async function encodeImage(bitmap: ImageBitmap, options: EncodeOptions): 
     // dimensions change rather than being extrapolated.
     for (let attempt = 0; attempt < 3 && !fitted; attempt++) {
       if (attempt > 0) {
-        dims = targetDimensions(bitmap, options.maxDimension, scale);
+        dims = targetDimensions(bitmap, options, scale);
         canvas = prepareCanvas(bitmap, options, dims.width, dims.height);
       }
 

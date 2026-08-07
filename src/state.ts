@@ -1,12 +1,15 @@
 import { detectCapabilities, formatExtension, type Capabilities, type OutputFormat } from './lib/capabilities';
 import { BitmapCache } from './lib/bitmapCache';
+import { detectKind, kindLabel, type SourceKind } from './lib/detect';
 import { encodeImage, encodeThumbnail } from './lib/encode';
 import { cloneExif, parseExif, removeIfd, removeTags, type ExifData, type IfdName } from './lib/exif';
 import { applyNamePattern } from './lib/format';
-import { extractHeifMetadata, looksLikeHeif } from './lib/isobmff';
+import { extractHeifMetadata } from './lib/isobmff';
+import { extractJpegMetadata } from './lib/jpegMeta';
 import { buildPdf, type PdfOptions, type PdfPageImage } from './lib/pdf';
+import { readPngMetadata } from './lib/pngChunks';
 import { DecodePool } from './lib/pool';
-import type { BatchProgress, ItemOverride, QueueItem, Settings } from './types';
+import type { BatchProgress, CropRect, ItemOverride, QueueItem, Settings } from './types';
 
 /** Caps how many encodes run at once so the UI stays responsive. */
 class Semaphore {
@@ -39,10 +42,13 @@ function isCancelled(item: QueueItem): boolean {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  tool: 'compress',
   format: 'image/jpeg',
   quality: 0.85,
-  maxDimension: 0,
+  resize: { mode: 'none', longest: 1920, width: 1920, height: 1080, keepAspect: true, percent: 50 },
   targetBytes: 0,
+  rotate: 0,
+  flipHorizontal: false,
   keepExif: true,
   keepGps: true,
   keepIcc: true,
@@ -129,6 +135,8 @@ export class Converter {
       const item: QueueItem = {
         id: `item-${this.nextId++}`,
         file,
+        kind: 'unknown',
+        crop: null,
         outName: file.name,
         status: 'queued',
         srcWidth: 0,
@@ -224,6 +232,16 @@ export class Converter {
     this.events.onQueueChanged();
   }
 
+  /** Sets or clears the per-image crop rectangle. */
+  setCrop(id: string, crop: CropRect | null): void {
+    const item = this.items.find((entry) => entry.id === id);
+    if (!item) return;
+    item.crop = crop;
+    this.settingsVersion++;
+    if (item.status === 'ready') void this.encode(item);
+    this.events.onQueueChanged();
+  }
+
   setStrippedKeys(id: string, keys: Set<string>): void {
     const item = this.items.find((entry) => entry.id === id);
     if (!item) return;
@@ -265,22 +283,24 @@ export class Converter {
 
     try {
       const buffer = await item.file.arrayBuffer();
+      const kind = detectKind(buffer);
+      item.kind = kind;
 
-      if (!looksLikeHeif(buffer)) {
-        this.fail(item, 'Not a HEIC/HEIF image');
+      if (kind === 'unknown') {
+        this.fail(item, 'Unsupported file — try HEIC, JPG, PNG or WebP');
         return;
       }
 
       // Must happen before the buffer is transferred to the worker, which
       // detaches it.
-      const raw = extractHeifMetadata(buffer);
-      item.metadata = {
-        exif: raw.exif ? parseExif(raw.exif) : null,
-        icc: raw.icc,
-        xmp: raw.xmp,
-      };
+      item.metadata = this.readMetadata(kind, buffer);
 
-      const bitmap = await this.decodeBuffer(item.id, buffer);
+      // Only HEIC needs the WASM decoder; the browser already knows the rest,
+      // which is faster and avoids loading the decoder at all.
+      const bitmap =
+        kind === 'heif'
+          ? await this.decodeBuffer(item.id, buffer)
+          : await this.decodeNatively(item.id, item.file, kind);
       if (isCancelled(item)) return;
 
       item.srcWidth = bitmap.width;
@@ -301,11 +321,42 @@ export class Converter {
     }
   }
 
+  private readMetadata(kind: SourceKind, buffer: ArrayBuffer): QueueItem['metadata'] {
+    let raw: { exif: Uint8Array | null; icc: Uint8Array | null; xmp: Uint8Array | null };
+
+    if (kind === 'heif') raw = extractHeifMetadata(buffer);
+    else if (kind === 'jpeg') raw = extractJpegMetadata(buffer);
+    else if (kind === 'png') {
+      const png = readPngMetadata(buffer);
+      raw = { exif: png.exif, icc: png.icc, xmp: null };
+    } else {
+      // WebP/GIF/BMP metadata is not read; nothing is claimed that isn't there.
+      raw = { exif: null, icc: null, xmp: null };
+    }
+
+    return { exif: raw.exif ? parseExif(raw.exif) : null, icc: raw.icc, xmp: raw.xmp };
+  }
+
   private async decodeBuffer(id: string, buffer: ArrayBuffer): Promise<ImageBitmap> {
     const response = await this.pool.decode(buffer);
     if (!response.ok) throw new Error(response.error);
     this.cache.set(id, response.bitmap);
     return response.bitmap;
+  }
+
+  /**
+   * Browser-native decode for everything except HEIC. `from-image` makes the
+   * browser apply the file's own EXIF rotation, matching what libheif does, so
+   * both paths hand back upright pixels.
+   */
+  private async decodeNatively(id: string, file: File, kind: SourceKind): Promise<ImageBitmap> {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+      this.cache.set(id, bitmap);
+      return bitmap;
+    } catch {
+      throw new Error(`This ${kindLabel(kind)} file could not be decoded`);
+    }
   }
 
   /** Returns a decoded bitmap, re-decoding from disk if it was evicted. */
@@ -317,6 +368,7 @@ export class Converter {
     if (existing) return existing;
 
     const pending = (async () => {
+      if (item.kind !== 'heif') return this.decodeNatively(item.id, item.file, item.kind);
       const buffer = await item.file.arrayBuffer();
       return this.decodeBuffer(item.id, buffer);
     })();
@@ -367,7 +419,10 @@ export class Converter {
       const result = await encodeImage(bitmap, {
         format: override.format ?? this.settings.format,
         quality: override.quality ?? this.settings.quality,
-        maxDimension: override.maxDimension ?? this.settings.maxDimension,
+        resize: this.settings.resize,
+        crop: item.crop,
+        rotate: this.settings.rotate,
+        flipHorizontal: this.settings.flipHorizontal,
         targetBytes: override.targetBytes ?? this.settings.targetBytes,
         metadata: {
           exif: this.buildExif(item),
@@ -437,7 +492,10 @@ export class Converter {
         const jpeg = await encodeImage(bitmap, {
           format: 'image/jpeg',
           quality: override.quality ?? this.settings.quality,
-          maxDimension: override.maxDimension ?? this.settings.maxDimension,
+          resize: this.settings.resize,
+          crop: item.crop,
+          rotate: this.settings.rotate,
+          flipHorizontal: this.settings.flipHorizontal,
           targetBytes: override.targetBytes ?? this.settings.targetBytes,
           metadata: { exif: null, icc: null, xmp: null },
         });

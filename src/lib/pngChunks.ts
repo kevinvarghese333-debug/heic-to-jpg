@@ -5,7 +5,7 @@
  * `iCCP` and `eXIf` chunks. Both are standard: `iCCP` since PNG 1.0, `eXIf`
  * since the 2017 extension, and both are widely honoured by modern viewers.
  */
-import { zlibSync } from 'fflate';
+import { unzlibSync, zlibSync } from 'fflate';
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -51,6 +51,47 @@ function afterIhdr(bytes: Uint8Array): number {
 export interface PngMetadata {
   icc: Uint8Array | null;
   exif: Uint8Array | null;
+}
+
+/** Reads `iCCP` and `eXIf` back out, for when a PNG is the input. */
+export function readPngMetadata(buffer: ArrayBuffer): PngMetadata {
+  const result: PngMetadata = { icc: null, exif: null };
+  try {
+    const bytes = new Uint8Array(buffer);
+    if (!isPng(bytes)) return result;
+
+    const dv = new DataView(buffer);
+    let p = 8;
+    while (p + 12 <= bytes.length) {
+      const length = dv.getUint32(p);
+      const type = String.fromCharCode(bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]);
+      const data = p + 8;
+      if (data + length > bytes.length) break;
+
+      if (type === 'IDAT' || type === 'IEND') break;
+
+      if (type === 'eXIf' && !result.exif) {
+        result.exif = bytes.slice(data, data + length);
+      } else if (type === 'iCCP' && !result.icc) {
+        // profile name (null-terminated), compression method byte, then zlib data
+        let cursor = data;
+        const limit = Math.min(data + 80, data + length);
+        while (cursor < limit && bytes[cursor] !== 0) cursor++;
+        const compressed = bytes.subarray(cursor + 2, data + length);
+        try {
+          const icc = unzlibSync(compressed);
+          if (icc.length >= 132) result.icc = icc;
+        } catch {
+          /* unreadable profile is simply not carried */
+        }
+      }
+
+      p = data + length + 4;
+    }
+    return result;
+  } catch {
+    return result;
+  }
 }
 
 export function addPngMetadata(png: Uint8Array, metadata: PngMetadata): Uint8Array {

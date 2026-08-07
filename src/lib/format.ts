@@ -13,9 +13,12 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds % 60}s`;
 }
 
-/** Strips the HEIC-family extension, leaving the bare stem. */
+/**
+ * Strips a known image extension, leaving the bare stem. Covers every accepted
+ * input type — otherwise converting `photo.jpg` to JPG produces `photo.jpg.jpg`.
+ */
 export function baseName(filename: string): string {
-  return filename.replace(/\.(heic|heif|hif|avif)$/i, '');
+  return filename.replace(/\.(heic|heif|hif|avif|jpe?g|png|webp|gif|bmp|tiff?)$/i, '');
 }
 
 export interface NameContext {

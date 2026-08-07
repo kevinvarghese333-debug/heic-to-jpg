@@ -1,8 +1,13 @@
-# HEIC → JPG
+# Image Toolkit — compress, resize, crop, convert
 
-A browser-based HEIC/HEIF converter. Photos are decoded with a WebAssembly build
-of [libheif](https://github.com/strukturag/libheif) inside the visitor's own tab —
-nothing is uploaded, and there is no backend to run or pay for.
+A browser-based image toolkit. Accepts **HEIC, HEIF, AVIF, JPG, PNG, WebP, GIF
+and BMP**; HEIC is decoded with a WebAssembly build of
+[libheif](https://github.com/strukturag/libheif), everything else uses the
+browser's own decoders. All of it runs inside the visitor's own tab — nothing is
+uploaded, and there is no backend to run or pay for.
+
+Four tools over one pipeline, so a file is decoded once and every setting is
+live: **Compress · Resize · Crop & rotate · Convert**.
 
 ## Why in-browser
 
@@ -16,6 +21,13 @@ nothing is uploaded, and there is no backend to run or pay for.
 
 ## Features
 
+- **Universal input** — drop a HEIC from an iPhone or a JPG from anywhere; the
+  type is detected from magic bytes, not the file extension.
+- **Compress** — quality slider plus a target file size that actually hits.
+- **Resize** — by longest edge, percentage, or exact dimensions (fit or stretch).
+  Fitting never enlarges.
+- **Crop & rotate** — batch-crop everything to a ratio, or place a crop by hand
+  per image with a drag-and-resize editor. Rotate in 90° steps and flip.
 - **Formats** — JPG, PNG, WebP and AVIF out, gated on what the browser can
   actually encode (AVIF is Chromium-only, and unsupported options are hidden
   rather than silently falling back to PNG).
