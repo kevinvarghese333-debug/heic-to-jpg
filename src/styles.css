@@ -1425,3 +1425,42 @@ input[type='number']:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- upscale: AI panel ---------- */
+
+.aipanel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-sunken);
+}
+
+.aipanel__status {
+  font-size: 13px;
+  color: var(--ink-faint);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.aipanel__status strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.progress__fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  /* Long jobs, so the bar is eased rather than snapping tile to tile. */
+  transition: width 240ms ease;
+}

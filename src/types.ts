@@ -1,11 +1,18 @@
 import type { OutputFormat } from './lib/capabilities';
 import type { SourceKind } from './lib/detect';
 import type { ExifData } from './lib/exif';
+import type { UpscaleSpec } from './lib/upscale';
 
 export type ItemStatus = 'queued' | 'decoding' | 'ready' | 'error' | 'cancelled';
 
 /** Which control group the UI is showing. All operate on the same queue. */
-export type Tool = 'compress' | 'resize' | 'crop' | 'convert';
+export type Tool = 'compress' | 'resize' | 'crop' | 'convert' | 'upscale';
+
+/**
+ * Which upscaler does the work. `classical` is instant and always available;
+ * `ai` is much better and much slower, and needs WebGPU.
+ */
+export type UpscaleEngine = 'classical' | 'ai';
 
 export type ResizeMode = 'none' | 'longest' | 'exact' | 'percent';
 
@@ -47,6 +54,8 @@ export interface Settings {
   keepXmp: boolean;
   /** Batch rename pattern; empty keeps the original stem */
   namePattern: string;
+  upscale: UpscaleSpec;
+  upscaleEngine: UpscaleEngine;
 }
 
 /** Per-file settings that win over the global ones. */
@@ -85,6 +94,16 @@ export interface QueueItem {
   notes: string[];
   override: ItemOverride | null;
   qualityUsed: number;
+  /**
+   * Result of a neural upscale, already at the requested output size.
+   *
+   * Cached because the model costs seconds per megapixel — far too slow to
+   * re-run when the quality slider moves. Once this exists it replaces the
+   * source bitmap for encoding, so changing format or quality stays instant.
+   */
+  enhanced?: ImageBitmap;
+  /** The upscale settings `enhanced` was produced with, so staleness is visible */
+  enhancedKey?: string;
 }
 
 export interface DecodeRequest {

@@ -16,10 +16,12 @@ import {
   saveBlob,
 } from './lib/format';
 import { describeResize } from './lib/geometry';
+import { DEFAULT_MODEL_ID, MODELS } from './lib/superres';
+import { filterLabel, type UpscaleFilter, type UpscaleMode } from './lib/upscale';
 import { subscribeNetStats } from './lib/netGuard';
 import { buildZip, canStreamToDisk, streamZipToDisk } from './lib/zip';
 import { Converter } from './state';
-import type { CropRect, ItemOverride, QueueItem, ResizeMode, Tool } from './types';
+import type { CropRect, ItemOverride, QueueItem, ResizeMode, Tool, UpscaleEngine } from './types';
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -56,6 +58,32 @@ const resizeExactField = el<HTMLElement>('resize-exact-field');
 const resizeWidthInput = el<HTMLInputElement>('resize-width');
 const resizeHeightInput = el<HTMLInputElement>('resize-height');
 const resizeKeepAspect = el<HTMLInputElement>('resize-keep-aspect');
+
+const upscaleModeSelect = el<HTMLSelectElement>('upscale-mode');
+const upscaleHint = el<HTMLElement>('upscale-hint');
+const upscaleScaleField = el<HTMLElement>('upscale-scale-field');
+const upscaleScales = el<HTMLElement>('upscale-scales');
+const upscaleLongestField = el<HTMLElement>('upscale-longest-field');
+const upscaleLongestSelect = el<HTMLSelectElement>('upscale-longest');
+const upscaleExactField = el<HTMLElement>('upscale-exact-field');
+const upscaleWidthInput = el<HTMLInputElement>('upscale-width');
+const upscaleHeightInput = el<HTMLInputElement>('upscale-height');
+const upscaleKeepAspect = el<HTMLInputElement>('upscale-keep-aspect');
+const upscaleEngineSelect = el<HTMLSelectElement>('upscale-engine');
+const upscaleEngineHint = el<HTMLElement>('upscale-engine-hint');
+const upscaleFilterField = el<HTMLElement>('upscale-filter-field');
+const upscaleFilterSelect = el<HTMLSelectElement>('upscale-filter');
+const upscaleTuningField = el<HTMLElement>('upscale-tuning-field');
+const upscaleSharpenInput = el<HTMLInputElement>('upscale-sharpen');
+const upscaleSharpenValue = el<HTMLOutputElement>('upscale-sharpen-value');
+const upscaleDering = el<HTMLInputElement>('upscale-dering');
+const upscaleAiPanel = el<HTMLElement>('upscale-ai-panel');
+const upscaleAiStatus = el<HTMLElement>('upscale-ai-status');
+const upscaleProgress = el<HTMLElement>('upscale-progress');
+const upscaleProgressFill = el<HTMLElement>('upscale-progress-fill');
+const upscaleRunButton = el<HTMLButtonElement>('upscale-run');
+const upscaleCancelButton = el<HTMLButtonElement>('upscale-cancel');
+const upscaleResetButton = el<HTMLButtonElement>('upscale-reset');
 
 const cropRatios = el<HTMLElement>('crop-ratios');
 const rotateLeftButton = el<HTMLButtonElement>('rotate-left');
@@ -178,7 +206,27 @@ const converter = new Converter({
     cards.delete(item.id);
     syncChrome();
   },
-  onQueueChanged: syncChrome,
+  onQueueChanged: () => {
+    syncChrome();
+    syncUpscaleStatus();
+  },
+  onEnhanceProgress: (state) => {
+    const running = state !== null;
+    upscaleProgress.hidden = !running;
+    upscaleCancelButton.hidden = !running;
+    upscaleRunButton.disabled = running;
+
+    if (state) {
+      upscaleProgressFill.style.width = `${Math.round(state.fraction * 100)}%`;
+      // Built as nodes, not markup — the label carries a filename, and
+      // filenames are allowed to contain angle brackets.
+      const of = state.total > 1 ? ` (${state.done + 1} of ${state.total})` : '';
+      const strong = makeElement('strong', '', state.label);
+      upscaleAiStatus.replaceChildren(strong, document.createTextNode(of));
+    } else {
+      syncUpscaleStatus();
+    }
+  },
 });
 
 /* ------------------------------------------------------------------- tabs */
@@ -194,7 +242,14 @@ function selectTool(tool: Tool): void {
     panel.classList.toggle('is-active', active);
     panel.hidden = !active;
   }
-  converter.settings.tool = tool;
+  // Every other tool only changes which controls are shown, so assigning
+  // directly is enough. Upscale is the exception — it changes the output — so
+  // crossing into or out of it has to go through updateSettings and re-encode.
+  const crossesUpscale = (converter.settings.tool === 'upscale') !== (tool === 'upscale');
+  if (crossesUpscale) converter.updateSettings({ tool });
+  else converter.settings.tool = tool;
+
+  if (tool === 'upscale') syncUpscaleStatus();
 }
 
 for (const tab of tabs) {
@@ -311,9 +366,11 @@ function updateCard(item: QueueItem): void {
   }
 
   if (item.outBlob) {
-    const resized = item.outWidth !== item.srcWidth || item.outHeight !== item.srcHeight;
     const marks = [`${item.outWidth}×${item.outHeight}`];
-    if (resized) marks.push('↓');
+    // Direction matters now that images can grow as well as shrink.
+    if (item.outWidth > item.srcWidth || item.outHeight > item.srcHeight) marks.push('↑');
+    else if (item.outWidth !== item.srcWidth || item.outHeight !== item.srcHeight) marks.push('↓');
+    if (converter.isEnhanced(item)) marks.push('AI');
     if (item.crop) marks.push('✂');
     refs.meta.textContent = `${marks.join(' ')} · ${formatBytes(item.outSize)}`;
     refs.delta.className = 'card__delta';
@@ -890,6 +947,156 @@ function commitResize(): void {
 }
 
 resizeModeSelect.addEventListener('change', commitResize);
+
+/* --------- upscale --------- */
+
+for (const filter of ['catrom', 'lanczos3', 'lanczos2', 'mitchell', 'bilinear'] as UpscaleFilter[]) {
+  const option = makeElement('option', '', filterLabel(filter));
+  option.value = filter;
+  if (filter === 'catrom') option.selected = true;
+  upscaleFilterSelect.appendChild(option);
+}
+
+function selectedScale(): number {
+  const active = upscaleScales.querySelector('.chip.is-active');
+  return Number((active as HTMLElement | null)?.dataset.scale ?? 2);
+}
+
+function commitUpscale(): void {
+  const mode = upscaleModeSelect.value as UpscaleMode;
+  upscaleScaleField.hidden = mode !== 'scale';
+  upscaleLongestField.hidden = mode !== 'longest';
+  upscaleExactField.hidden = mode !== 'exact';
+
+  const upscale = {
+    mode,
+    scale: selectedScale(),
+    longest: Number(upscaleLongestSelect.value),
+    width: Math.max(1, Number(upscaleWidthInput.value) || 1),
+    height: Math.max(1, Number(upscaleHeightInput.value) || 1),
+    keepAspect: upscaleKeepAspect.checked,
+    filter: upscaleFilterSelect.value as UpscaleFilter,
+    sharpen: Number(upscaleSharpenInput.value),
+    deringing: upscaleDering.checked,
+  };
+
+  const engine = upscaleEngineSelect.value as UpscaleEngine;
+  // The filter and sharpen controls belong to the classical resampler. Under
+  // the model they would be describing work it does not do, so they go away
+  // rather than sitting there doing nothing.
+  upscaleFilterField.hidden = engine === 'ai';
+  upscaleTuningField.hidden = engine === 'ai';
+  upscaleAiPanel.hidden = engine !== 'ai';
+  upscaleEngineHint.textContent =
+    engine === 'ai'
+      ? 'Runs a model on your GPU. Nothing is uploaded — the model is downloaded to you.'
+      : "Sharper than the browser's own enlargement, and instant.";
+
+  upscaleHint.textContent = describeUpscaleSummary(upscale.mode, upscale);
+  converter.updateSettings({ upscale, upscaleEngine: engine });
+  syncUpscaleStatus();
+}
+
+function describeUpscaleSummary(mode: UpscaleMode, spec: { scale: number; longest: number; width: number; height: number; keepAspect: boolean }): string {
+  if (mode === 'longest') return `Longest edge grows to ${spec.longest}px.`;
+  if (mode === 'exact') return `${spec.width}×${spec.height}${spec.keepAspect ? ' (fit)' : ' (stretch)'}.`;
+  return `${spec.scale}× enlargement.`;
+}
+
+/**
+ * Keeps the AI panel honest about what will happen: whether the hardware can
+ * run it at all, how long the queue will take, and which files are too big.
+ */
+function syncUpscaleStatus(): void {
+  if (converter.isEnhancing) return;
+
+  const supported = converter.aiSupported;
+  const model = MODELS[DEFAULT_MODEL_ID];
+  const eligible = converter.pendingEnhancement;
+  const oversized = converter.oversizedForAi;
+  const enhanced = converter.items.filter((item) => converter.isEnhanced(item)).length;
+
+  upscaleRunButton.disabled = supported !== true || eligible.length === 0;
+  upscaleResetButton.hidden = enhanced === 0;
+  upscaleProgress.hidden = true;
+  upscaleCancelButton.hidden = true;
+
+  if (supported === null) {
+    upscaleAiStatus.textContent = 'Checking whether this device can run the model…';
+    return;
+  }
+  if (!supported) {
+    upscaleAiStatus.textContent =
+      'This browser cannot run the model — it needs WebGPU. The standard upscaler still works and is instant.';
+    return;
+  }
+
+  const parts: string[] = [];
+  if (enhanced > 0) parts.push(`${enhanced} image${enhanced === 1 ? '' : 's'} enhanced.`);
+
+  if (eligible.length === 0) {
+    if (enhanced > 0) {
+      // Nothing pending and something done — say so plainly rather than
+      // offering work that does not exist.
+      parts.push('Nothing left to enhance at these settings.');
+    } else {
+      parts.push(
+        oversized.length > 0
+          ? 'Every image here is too large for the model. Enlarging is for small images; use the standard upscaler.'
+          : 'Add a small image to enhance.',
+      );
+    }
+  } else {
+    const seconds = converter.estimateEnhanceSeconds();
+    parts.push(
+      `${eligible.length} image${eligible.length === 1 ? '' : 's'} to enhance, roughly ${
+        formatDuration(seconds * 1000) || '1s'
+      }.`,
+    );
+    // The first run pays for the model on top of everything else, and 28MB on
+    // a phone connection is worth saying before the button is pressed.
+    if (!converter.modelLoaded) parts.push(`First run also downloads the model (${formatBytes(model.bytes)}), once.`);
+  }
+  if (oversized.length > 0 && eligible.length > 0) {
+    parts.push(`${oversized.length} too large and will be skipped.`);
+  }
+
+  upscaleAiStatus.textContent = parts.join(' ');
+}
+
+for (const chip of Array.from(upscaleScales.querySelectorAll<HTMLButtonElement>('.chip'))) {
+  chip.addEventListener('click', () => {
+    for (const other of Array.from(upscaleScales.querySelectorAll('.chip'))) {
+      other.classList.toggle('is-active', other === chip);
+    }
+    commitUpscale();
+  });
+}
+
+upscaleModeSelect.addEventListener('change', commitUpscale);
+upscaleLongestSelect.addEventListener('change', commitUpscale);
+upscaleWidthInput.addEventListener('change', commitUpscale);
+upscaleHeightInput.addEventListener('change', commitUpscale);
+upscaleKeepAspect.addEventListener('change', commitUpscale);
+upscaleEngineSelect.addEventListener('change', commitUpscale);
+upscaleFilterSelect.addEventListener('change', commitUpscale);
+upscaleDering.addEventListener('change', commitUpscale);
+upscaleSharpenInput.addEventListener('input', () => {
+  upscaleSharpenValue.textContent = upscaleSharpenInput.value;
+});
+upscaleSharpenInput.addEventListener('change', commitUpscale);
+
+upscaleRunButton.addEventListener('click', () => {
+  void converter.enhanceAll().catch((error: Error) => {
+    upscaleAiStatus.textContent = error.message;
+  });
+});
+upscaleCancelButton.addEventListener('click', () => converter.cancelEnhance());
+upscaleResetButton.addEventListener('click', () => {
+  converter.clearEnhancements();
+  syncUpscaleStatus();
+});
+
 resizeLongestSelect.addEventListener('change', commitResize);
 resizePercentInput.addEventListener('input', () => {
   resizePercentValue.textContent = resizePercentInput.value;
@@ -1125,7 +1332,9 @@ function boot(): void {
   if ('serviceWorker' in navigator && import.meta.env.PROD) {
     // This module is imported lazily, so `load` has usually already fired by
     // now — waiting for it would mean the worker never registers at all.
-    const register = () => navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    const base = import.meta.env.BASE_URL;
+    const register = () =>
+      navigator.serviceWorker.register(`${base}sw.js`, { scope: base }).catch(() => undefined);
     if (document.readyState === 'complete') void register();
     else window.addEventListener('load', register, { once: true });
   }

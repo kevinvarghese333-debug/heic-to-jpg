@@ -16,9 +16,9 @@
       content="Compress and convert photos without uploading them anywhere. Target file size, crop, resize, metadata control."
     />
     <meta property="og:type" content="website" />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
-    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
   </head>
   <body>
     <div class="page">
@@ -84,6 +84,9 @@
             </button>
             <button class="tab" role="tab" type="button" data-tool="resize" aria-selected="false">
               Resize
+            </button>
+            <button class="tab" role="tab" type="button" data-tool="upscale" aria-selected="false">
+              Upscale
             </button>
             <button class="tab" role="tab" type="button" data-tool="crop" aria-selected="false">
               Crop &amp; rotate
@@ -181,6 +184,117 @@
                   <p class="control__hint">
                     On, images fit inside the box. Off, they are stretched to it exactly.
                   </p>
+                </div>
+              </div>
+            </div>
+
+
+            <!-- UPSCALE -->
+            <div class="panel" data-panel="upscale" role="tabpanel" hidden>
+              <p class="panel__lede">
+                Enlarging, for images that are too small. Standard is instant; AI
+                reconstructs real detail but takes time and only runs on small images.
+              </p>
+              <div class="controls__grid">
+                <div class="control">
+                  <label for="upscale-mode">Enlarge by</label>
+                  <select id="upscale-mode">
+                    <option value="scale" selected>Multiplier</option>
+                    <option value="longest">Longest edge</option>
+                    <option value="exact">Exact dimensions</option>
+                  </select>
+                  <p class="control__hint" id="upscale-hint">2× enlargement.</p>
+                </div>
+
+                <div class="control" id="upscale-scale-field">
+                  <label>Multiplier</label>
+                  <div class="chipset" id="upscale-scales">
+                    <button class="chip is-active" type="button" data-scale="2">2×</button>
+                    <button class="chip" type="button" data-scale="3">3×</button>
+                    <button class="chip" type="button" data-scale="4">4×</button>
+                  </div>
+                  <p class="control__hint">
+                    Past about 4× there is no detail left to reconstruct.
+                  </p>
+                </div>
+
+                <div class="control" id="upscale-longest-field" hidden>
+                  <label for="upscale-longest">Longest edge (px)</label>
+                  <select id="upscale-longest">
+                    <option value="4096">4096</option>
+                    <option value="2560">2560</option>
+                    <option value="2048" selected>2048</option>
+                    <option value="1920">1920</option>
+                    <option value="1280">1280</option>
+                  </select>
+                  <p class="control__hint">Never shrinks — that is the Resize tool.</p>
+                </div>
+
+                <div class="control" id="upscale-exact-field" hidden>
+                  <label>Width × height (px)</label>
+                  <div class="inputrow">
+                    <input id="upscale-width" type="number" min="1" value="2048" aria-label="Width" />
+                    <span class="inputrow__x">×</span>
+                    <input id="upscale-height" type="number" min="1" value="2048" aria-label="Height" />
+                  </div>
+                  <label class="switch switch--inline" for="upscale-keep-aspect">
+                    <input id="upscale-keep-aspect" type="checkbox" checked />
+                    <span class="switch__track"><span class="switch__thumb"></span></span>
+                    <span class="switch__label">Keep aspect ratio</span>
+                  </label>
+                </div>
+
+                <div class="control">
+                  <label for="upscale-engine">Engine</label>
+                  <select id="upscale-engine">
+                    <option value="classical" selected>Standard — instant</option>
+                    <option value="ai">AI — slower, much sharper</option>
+                  </select>
+                  <p class="control__hint" id="upscale-engine-hint">
+                    Sharper than the browser's own enlargement, and instant.
+                  </p>
+                </div>
+
+                <div class="control" id="upscale-filter-field">
+                  <label for="upscale-filter">Filter</label>
+                  <select id="upscale-filter"></select>
+                  <p class="control__hint">
+                    How neighbouring pixels are weighted. Sharper filters ring more.
+                  </p>
+                </div>
+
+                <div class="control" id="upscale-tuning-field">
+                  <label for="upscale-sharpen">
+                    Sharpen
+                    <output id="upscale-sharpen-value" for="upscale-sharpen">0.4</output>
+                  </label>
+                  <input id="upscale-sharpen" type="range" min="0" max="1.5" step="0.1" value="0.4" />
+                  <label class="switch switch--inline" for="upscale-dering">
+                    <input id="upscale-dering" type="checkbox" checked />
+                    <span class="switch__track"><span class="switch__thumb"></span></span>
+                    <span class="switch__label">Suppress edge halos</span>
+                  </label>
+                  <p class="control__hint">
+                    Enlarging always softens an image; sharpening puts the bite back.
+                  </p>
+                </div>
+              </div>
+
+              <div class="aipanel" id="upscale-ai-panel" hidden>
+                <p class="aipanel__status" id="upscale-ai-status"></p>
+                <div class="progress" id="upscale-progress" hidden>
+                  <div class="progress__fill" id="upscale-progress-fill"></div>
+                </div>
+                <div class="results__actions">
+                  <button class="btn btn--primary" type="button" id="upscale-run">
+                    Enhance with AI
+                  </button>
+                  <button class="btn btn--ghost" type="button" id="upscale-cancel" hidden>
+                    Cancel
+                  </button>
+                  <button class="btn btn--ghost" type="button" id="upscale-reset" hidden>
+                    Discard AI result
+                  </button>
                 </div>
               </div>
             </div>

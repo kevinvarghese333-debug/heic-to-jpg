@@ -6,8 +6,8 @@ and BMP**; HEIC is decoded with a WebAssembly build of
 browser's own decoders. All of it runs inside the visitor's own tab — nothing is
 uploaded, and there is no backend to run or pay for.
 
-Four tools over one pipeline, so a file is decoded once and every setting is
-live: **Compress · Resize · Crop & rotate · Convert**.
+Five tools over one pipeline, so a file is decoded once and every setting is
+live: **Compress · Resize · Upscale · Crop & rotate · Convert**.
 
 ## Why in-browser
 
@@ -28,6 +28,11 @@ live: **Compress · Resize · Crop & rotate · Convert**.
   Fitting never enlarges.
 - **Crop & rotate** — batch-crop everything to a ratio, or place a crop by hand
   per image with a drag-and-resize editor. Rotate in 90° steps and flip.
+- **Upscale** — two engines. A classical resampler (Lanczos/Catmull-Rom, with
+  de-ringing and an unsharp pass) that is instant and works everywhere, and an
+  optional neural upscaler (RealPLKSR ×2 via ONNX Runtime on WebGPU) that runs
+  on the visitor's own GPU. The model is downloaded to the device and run
+  locally — still nothing uploaded.
 - **Formats** — JPG, PNG, WebP and AVIF out, gated on what the browser can
   actually encode (AVIF is Chromium-only, and unsupported options are hidden
   rather than silently falling back to PNG).

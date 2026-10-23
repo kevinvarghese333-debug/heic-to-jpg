@@ -1,11 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    {
-      "name": "heic-to-jpg",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5180
-    }
+    { "name": "heic-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 5180 }
   ]
 }

@@ -9,6 +9,23 @@ import { extractJpegMetadata } from './lib/jpegMeta';
 import { buildPdf, type PdfOptions, type PdfPageImage } from './lib/pdf';
 import { readPngMetadata } from './lib/pngChunks';
 import { DecodePool } from './lib/pool';
+import {
+  DEFAULT_MODEL_ID,
+  MAX_AI_INPUT_PIXELS,
+  MODELS,
+  SuperResSession,
+  estimateSeconds,
+  isSupported as isAiSupported,
+  superResolve,
+  type SuperResProgress,
+} from './lib/superres';
+import {
+  DEFAULT_UPSCALE,
+  MAX_OUTPUT_PIXELS,
+  MAX_OUTPUT_PIXELS_MOBILE,
+  readPixels,
+  resolveUpscale,
+} from './lib/upscale';
 import type { BatchProgress, CropRect, ItemOverride, QueueItem, Settings } from './types';
 
 /** Caps how many encodes run at once so the UI stays responsive. */
@@ -54,13 +71,28 @@ export const DEFAULT_SETTINGS: Settings = {
   keepIcc: true,
   keepXmp: true,
   namePattern: '',
+  upscale: DEFAULT_UPSCALE,
+  upscaleEngine: 'classical',
 };
 
 export interface ConverterEvents {
   onItemAdded(item: QueueItem): void;
+  /** Progress of a neural upscale run, or null when one is not in flight */
+  onEnhanceProgress?(state: EnhanceState | null): void;
   onItemChanged(item: QueueItem): void;
   onItemRemoved(item: QueueItem): void;
   onQueueChanged(): void;
+}
+
+/** What the UI needs to show while the model is working. */
+export interface EnhanceState {
+  /** Items finished */
+  done: number;
+  total: number;
+  /** 0–1 across the whole batch */
+  fraction: number;
+  stage: SuperResProgress['stage'];
+  label: string;
 }
 
 export class Converter {
@@ -81,6 +113,17 @@ export class Converter {
   private batchStartedAt = 0;
   private completedSinceStart = 0;
 
+  /**
+   * The loaded model, kept for the lifetime of the tool.
+   *
+   * Building it costs a 28MB download and ~20s of shader compilation, so it is
+   * created once and reused across every tile and every image in the batch.
+   */
+  private srSession: SuperResSession | null = null;
+  private enhanceAbort: AbortController | null = null;
+  /** Null until the WebGPU probe finishes; the UI hides the option until then. */
+  aiSupported: boolean | null = null;
+
   constructor(private readonly events: ConverterEvents) {
     this.capabilities = detectCapabilities();
     this.pool = new DecodePool(this.capabilities.workerCount);
@@ -91,6 +134,39 @@ export class Converter {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') this.cache.trim(0.25);
     });
+
+    // Probed once, in the background — asking for a GPU adapter is the only
+    // reliable test and it is not instant.
+    void isAiSupported().then((supported) => {
+      this.aiSupported = supported;
+      this.events.onQueueChanged();
+    });
+  }
+
+  /** Ceiling on upscale output, sized to the device rather than assumed. */
+  private get maxUpscalePixels(): number {
+    return this.capabilities.isMobile ? MAX_OUTPUT_PIXELS_MOBILE : MAX_OUTPUT_PIXELS;
+  }
+
+  /**
+   * Identifies the settings an `enhanced` bitmap was produced with.
+   *
+   * Deliberately only the upscale spec. The model runs on the whole source, so
+   * crop, rotation and flip are applied afterwards by the normal encode path
+   * and stay live — changing them must not throw away half a minute of GPU work.
+   */
+  private upscaleKey(): string {
+    return JSON.stringify(this.settings.upscale);
+  }
+
+  /** True when this item's cached neural result still matches the settings. */
+  private hasFreshEnhancement(item: QueueItem): boolean {
+    return (
+      this.settings.tool === 'upscale' &&
+      this.settings.upscaleEngine === 'ai' &&
+      item.enhanced !== undefined &&
+      item.enhancedKey === this.upscaleKey()
+    );
   }
 
   get readyItems(): QueueItem[] {
@@ -166,6 +242,7 @@ export class Converter {
     if (index < 0) return;
     const [item] = this.items.splice(index, 1);
     this.cache.delete(item.id);
+    item.enhanced?.close();
     if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
     this.events.onItemRemoved(item);
     this.refreshNames();
@@ -413,16 +490,23 @@ export class Converter {
       // Settings moved on, or the item was removed or cancelled, while queued.
       if (version !== this.settingsVersion || !this.items.includes(item) || item.status !== 'ready') return;
 
-      const bitmap = await this.getBitmap(item);
+      // A cached neural result replaces the source outright: it is already
+      // enlarged, so the geometry work is switched off and only crop, rotation
+      // and flip still apply. That keeps every other control instant.
+      const enhanced = this.hasFreshEnhancement(item);
+      const bitmap = enhanced ? item.enhanced! : await this.getBitmap(item);
       const override = item.override ?? {};
+      const upscaling = this.settings.tool === 'upscale' && !enhanced;
 
       const result = await encodeImage(bitmap, {
         format: override.format ?? this.settings.format,
         quality: override.quality ?? this.settings.quality,
-        resize: this.settings.resize,
+        resize: enhanced ? { ...this.settings.resize, mode: 'none' } : this.settings.resize,
         crop: item.crop,
         rotate: this.settings.rotate,
         flipHorizontal: this.settings.flipHorizontal,
+        upscale: upscaling ? this.settings.upscale : null,
+        maxUpscalePixels: this.maxUpscalePixels,
         targetBytes: override.targetBytes ?? this.settings.targetBytes,
         metadata: {
           exif: this.buildExif(item),
@@ -470,6 +554,157 @@ export class Converter {
     return URL.createObjectURL(blob);
   }
 
+  /* ------------------------------------------------------------- enhance */
+
+  /**
+   * Predicted wall-clock for enhancing the whole queue, in seconds.
+   *
+   * The UI states this before starting. At roughly 20s per input megapixel a
+   * batch can easily run into minutes, and a progress bar that appears without
+   * warning is worse than a number that was promised up front.
+   */
+  estimateEnhanceSeconds(): number {
+    const scale = this.srSession?.model.scale ?? MODELS[DEFAULT_MODEL_ID].scale;
+    return this.pendingEnhancement
+      .reduce((total, item) => {
+        const target = resolveUpscale(
+          { width: item.srcWidth, height: item.srcHeight },
+          this.settings.upscale,
+          this.maxUpscalePixels,
+        );
+        const factor = Math.max(target.width / item.srcWidth, target.height / item.srcHeight);
+        const passes = Math.max(1, Math.ceil(Math.log(factor) / Math.log(scale)));
+        return total + estimateSeconds(item.srcWidth * item.srcHeight, passes);
+      }, 0);
+  }
+
+  /** Whether this item is small enough for the model to be worth pointing at. */
+  canEnhance(item: QueueItem): boolean {
+    return item.status === 'ready' && item.srcWidth * item.srcHeight <= MAX_AI_INPUT_PIXELS;
+  }
+
+  /** True when this item already has a neural result for the current settings. */
+  isEnhanced(item: QueueItem): boolean {
+    return item.enhanced !== undefined && item.enhancedKey === this.upscaleKey();
+  }
+
+  /**
+   * Items a run would actually work on.
+   *
+   * Anything already enhanced at the current settings is excluded, so pressing
+   * the button twice does not spend another half-minute reproducing a result
+   * that is already sitting in memory.
+   */
+  get pendingEnhancement(): QueueItem[] {
+    return this.readyItems.filter((item) => this.canEnhance(item) && !this.isEnhanced(item));
+  }
+
+  /** Items the model will skip, so the UI can say which and why. */
+  get oversizedForAi(): QueueItem[] {
+    return this.items.filter((item) => item.status === 'ready' && !this.canEnhance(item));
+  }
+
+  get isEnhancing(): boolean {
+    return this.enhanceAbort !== null;
+  }
+
+  /** True once the weights are downloaded and the session is built. */
+  get modelLoaded(): boolean {
+    return this.srSession?.ready ?? false;
+  }
+
+  /**
+   * Runs the neural upscaler over every eligible item, then re-encodes.
+   *
+   * Explicitly invoked rather than reactive: at seconds per megapixel this
+   * cannot be tied to a settings change the way the rest of the pipeline is.
+   * The result is cached on the item so that everything downstream — quality,
+   * format, crop, rotation — goes back to being instant afterwards.
+   */
+  async enhanceAll(): Promise<void> {
+    if (this.enhanceAbort) return;
+
+    const targets = this.pendingEnhancement;
+    if (targets.length === 0) throw new Error('Nothing left to enhance');
+
+    const abort = new AbortController();
+    this.enhanceAbort = abort;
+
+    const report = (done: number, inner: SuperResProgress | null, label: string) => {
+      this.events.onEnhanceProgress?.({
+        done,
+        total: targets.length,
+        fraction: (done + (inner?.fraction ?? 0)) / targets.length,
+        stage: inner?.stage ?? 'upscaling',
+        label,
+      });
+    };
+
+    try {
+      if (!this.srSession) this.srSession = new SuperResSession(MODELS[DEFAULT_MODEL_ID]);
+      const session = this.srSession;
+
+      // Separated from the loop so the download and the ~20s shader compile are
+      // reported as their own step rather than looking like a stalled image.
+      report(0, { done: 0, total: 1, fraction: 0, stage: 'downloading' }, 'Preparing the model');
+      await session.load((p) => report(0, p, p.stage === 'downloading' ? 'Downloading the model' : 'Preparing the model'));
+
+      const key = this.upscaleKey();
+      let done = 0;
+
+      for (const item of targets) {
+        if (abort.signal.aborted) break;
+        if (!this.items.includes(item)) continue;
+
+        item.encoding = true;
+        this.events.onItemChanged(item);
+
+        const bitmap = await this.getBitmap(item);
+        const source = readPixels(bitmap, bitmap.width, bitmap.height);
+        const { image, notes } = await superResolve(
+          source,
+          this.settings.upscale,
+          session,
+          (p) => report(done, p, `Enhancing ${item.file.name}`),
+          abort.signal,
+          this.maxUpscalePixels,
+        );
+
+        item.enhanced?.close();
+        item.enhanced = await createImageBitmap(new ImageData(image.data, image.width, image.height));
+        item.enhancedKey = key;
+        item.notes = notes;
+
+        done++;
+        report(done, null, `Enhancing ${item.file.name}`);
+        await this.encode(item);
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) throw error;
+    } finally {
+      this.enhanceAbort = null;
+      this.events.onEnhanceProgress?.(null);
+      this.events.onQueueChanged();
+    }
+  }
+
+  /** Stops a run in progress. Whatever finished keeps its result. */
+  cancelEnhance(): void {
+    this.enhanceAbort?.abort();
+  }
+
+  /** Throws away every cached neural result and re-encodes from the source. */
+  clearEnhancements(): void {
+    for (const item of this.items) {
+      if (!item.enhanced) continue;
+      item.enhanced.close();
+      item.enhanced = undefined;
+      item.enhancedKey = undefined;
+      if (item.status === 'ready') void this.encode(item);
+    }
+    this.events.onQueueChanged();
+  }
+
   /* ----------------------------------------------------------------- PDF */
 
   /**
@@ -496,6 +731,7 @@ export class Converter {
           crop: item.crop,
           rotate: this.settings.rotate,
           flipHorizontal: this.settings.flipHorizontal,
+          upscale: null,
           targetBytes: override.targetBytes ?? this.settings.targetBytes,
           metadata: { exif: null, icc: null, xmp: null },
         });

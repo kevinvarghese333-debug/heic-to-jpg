@@ -13,8 +13,15 @@
  * Together that means the app updates on the next visit while still working
  * with no network at all.
  */
-const CACHE = 'image-toolkit-v2';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest'];
+const CACHE = 'image-toolkit-v3';
+
+/**
+ * The path this worker was served from, e.g. `/` at the root or `/heic/` in a
+ * subfolder. A service worker cannot control pages above its own directory, so
+ * every path below is built from this rather than assumed to start at `/`.
+ */
+const BASE = new URL('./', self.location).pathname;
+const SHELL = [BASE, `${BASE}index.html`, `${BASE}manifest.webmanifest`];
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -39,9 +46,9 @@ self.addEventListener('fetch', (event) => {
 
   // The service worker script and the manifest must never be served from the
   // cache, or a new version could never take over.
-  if (url.pathname === '/sw.js') return;
+  if (url.pathname === `${BASE}sw.js`) return;
 
-  const isNavigation = request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html');
+  const isNavigation = request.mode === 'navigate' || url.pathname === BASE || url.pathname.endsWith('.html');
 
   if (isNavigation) {
     event.respondWith(
@@ -53,7 +60,7 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(request).then((cached) => cached || caches.match('/index.html'))),
+        .catch(() => caches.match(request).then((cached) => cached || caches.match(`${BASE}index.html`))),
     );
     return;
   }

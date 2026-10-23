@@ -3,6 +3,7 @@ import { applyOutputCorrections, fitExifToSegment, type ExifData } from './exif'
 import { baseSize, resolveResize, sourceRect } from './geometry';
 import { buildExifSegment, buildIccSegments, buildXmpSegment, insertJpegSegments } from './jpegSegments';
 import { addPngMetadata } from './pngChunks';
+import { MAX_OUTPUT_PIXELS, readPixels, resolveUpscale, upscaleRgba, type UpscaleSpec } from './upscale';
 import type { CropRect, ResizeSpec } from '../types';
 
 export interface MetadataPayload {
@@ -25,6 +26,15 @@ export interface EncodeOptions {
   /** Desired maximum output size in bytes; 0 disables the search */
   targetBytes: number;
   metadata: MetadataPayload;
+  /**
+   * Enlargement to apply after crop and rotation, or null to use `resize`.
+   *
+   * The two are mutually exclusive by design: `resolveResize` deliberately
+   * never enlarges, so upscaling has to bypass it rather than fight it.
+   */
+  upscale: UpscaleSpec | null;
+  /** Device-appropriate ceiling on upscale output; see `upscale.ts` */
+  maxUpscalePixels?: number;
 }
 
 export interface EncodeResult {
@@ -113,6 +123,14 @@ function flattenOntoWhite(canvas: AnyCanvas): AnyCanvas {
 
 function targetDimensions(bitmap: ImageBitmap, options: EncodeOptions, extraScale = 1): { width: number; height: number } {
   const base = baseSize(bitmap, options.crop, options.rotate);
+  if (options.upscale) {
+    const target = resolveUpscale(base, options.upscale, options.maxUpscalePixels ?? MAX_OUTPUT_PIXELS);
+    // `extraScale` is the size-target search shrinking things; it still applies.
+    return {
+      width: Math.max(1, Math.round(target.width * extraScale)),
+      height: Math.max(1, Math.round(target.height * extraScale)),
+    };
+  }
   return resolveResize(base, options.resize, extraScale);
 }
 
@@ -229,7 +247,22 @@ function prepareMetadata(
  */
 function prepareCanvas(bitmap: ImageBitmap, options: EncodeOptions, width: number, height: number): AnyCanvas {
   const rendered = renderSource(bitmap, options);
-  const canvas = drawScaled(rendered.source, rendered.width, rendered.height, width, height);
+  let canvas: AnyCanvas;
+
+  if (options.upscale && width > rendered.width) {
+    // Enlarging: go through the reconstruction filter rather than the browser's
+    // bilinear drawImage, which is the whole point of the upscale tool.
+    const src = readPixels(rendered.source, rendered.width, rendered.height);
+    const { image } = upscaleRgba(src, { ...options.upscale, mode: 'exact', width, height, keepAspect: false });
+    const target = createCanvas(image.width, image.height);
+    context2d(target).putImageData(new ImageData(image.data, image.width, image.height), 0, 0);
+    canvas = image.width === width && image.height === height
+      ? target
+      : drawScaled(target as CanvasImageSource, image.width, image.height, width, height);
+  } else {
+    canvas = drawScaled(rendered.source, rendered.width, rendered.height, width, height);
+  }
+
   return options.format === 'image/jpeg' ? flattenOntoWhite(canvas) : canvas;
 }
 

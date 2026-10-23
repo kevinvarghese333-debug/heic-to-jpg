@@ -3,3 +3,7 @@ dist
 .DS_Store
 *.local
 .vercel
+
+# WebGPU upscaler assets (large binaries, see UPSCALER.md)
+public/models/*.onnx
+public/ort/
